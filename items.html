@@ -80,18 +80,43 @@
                     return;
                 }
 
-                // Create item buttons
+                // Create clickable item cards
                 container.innerHTML = items.map(item => `
-                    <div class="item-card">
+                    <button class="item-card" data-item-name="${encodeURIComponent(item.name)}" data-item-aisle="${encodeURIComponent(item.aisle || '')}">
                         <div class="item-name">${item.name}</div>
                         ${item.aisle ? `<div class="item-aisle">Aisle ${item.aisle}</div>` : ''}
-                    </div>
+                    </button>
                 `).join('');
+
+                const cards = container.querySelectorAll('.item-card');
+                cards.forEach(card => {
+                    card.addEventListener('click', () => {
+                        const itemName = decodeURIComponent(card.dataset.itemName || '');
+                        const aisle = decodeURIComponent(card.dataset.itemAisle || '');
+                        openItemOnMap(itemName, aisle);
+                    });
+                });
 
             } catch (error) {
                 console.error('Error loading items:', error);
                 container.innerHTML = '<div class="error">Failed to load items. Please try again.</div>';
             }
+        }
+
+        function openItemOnMap(itemName, aisle) {
+            const payload = {
+                item: itemName || '',
+                aisle: aisle || ''
+            };
+
+            sessionStorage.setItem('mapTarget', JSON.stringify(payload));
+
+            const query = new URLSearchParams({
+                item: itemName || '',
+                aisle: aisle || ''
+            });
+
+            window.location.href = `map.html?${query.toString()}`;
         }
 
         // Load items when page loads

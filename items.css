@@ -33,6 +33,7 @@
     background-color: #0077ff;
     border: 2px solid #24b4fb;
     border-radius: 0.9em;
+    cursor: pointer;
     padding: 1.2em 1em;
     transition: all ease-in-out 0.2s;
     display: flex;
@@ -41,6 +42,9 @@
     justify-content: center;
     gap: 8px;
     min-height: 80px;
+    width: 100%;
+    font: inherit;
+    appearance: none;
 }
 
 .item-card:hover {
