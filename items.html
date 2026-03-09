@@ -82,7 +82,7 @@
 
                 // Create clickable item cards
                 container.innerHTML = items.map(item => `
-                    <button class="item-card" data-item-name="${encodeURIComponent(item.name)}" data-item-aisle="${encodeURIComponent(item.aisle || '')}">
+                    <button class="item-card" data-item-name="${encodeURIComponent(item.name)}" data-item-aisle="${encodeURIComponent(item.aisle || '')}" data-item-aisle-position="${encodeURIComponent(item.aisle_position ?? '')}">
                         <div class="item-name">${item.name}</div>
                         ${item.aisle ? `<div class="item-aisle">Aisle ${item.aisle}</div>` : ''}
                     </button>
@@ -93,7 +93,8 @@
                     card.addEventListener('click', () => {
                         const itemName = decodeURIComponent(card.dataset.itemName || '');
                         const aisle = decodeURIComponent(card.dataset.itemAisle || '');
-                        openItemOnMap(itemName, aisle);
+                        const aislePosition = decodeURIComponent(card.dataset.itemAislePosition || '');
+                        openItemOnMap(itemName, aisle, aislePosition);
                     });
                 });
 
@@ -103,17 +104,19 @@
             }
         }
 
-        function openItemOnMap(itemName, aisle) {
+        function openItemOnMap(itemName, aisle, aislePosition) {
             const payload = {
                 item: itemName || '',
-                aisle: aisle || ''
+                aisle: aisle || '',
+                aisle_position: aislePosition || ''
             };
 
             sessionStorage.setItem('mapTarget', JSON.stringify(payload));
 
             const query = new URLSearchParams({
                 item: itemName || '',
-                aisle: aisle || ''
+                aisle: aisle || '',
+                aisle_position: aislePosition || ''
             });
 
             window.location.href = `map.html?${query.toString()}`;

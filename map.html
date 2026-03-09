@@ -190,6 +190,19 @@
         return normalized;
       }
 
+      function parseAislePosition(value) {
+        if (value === null || value === undefined || value === "") {
+          return null;
+        }
+
+        const parsed = Number.parseFloat(value);
+        if (!Number.isFinite(parsed)) {
+          return null;
+        }
+
+        return Math.max(0, Math.min(1, parsed));
+      }
+
       function getStoredMapTarget() {
         try {
           const raw = sessionStorage.getItem("mapTarget");
@@ -204,6 +217,9 @@
         queryParams.get("item") || storedTarget?.item || "";
       const selectedAisleLabel = normalizeAisleLabel(
         queryParams.get("aisle") || storedTarget?.aisle || "",
+      );
+      const selectedAislePosition = parseAislePosition(
+        queryParams.get("aisle_position") ?? storedTarget?.aisle_position,
       );
 
       function updateTargetBanner() {
@@ -661,7 +677,8 @@
           if (matchedAisle) {
             const targetX = m(matchedAisle.x + offsetX);
             const rowTop = startY + matchedAisle.row * (rowHeight + rowGap);
-            const targetY = m(rowTop + rowHeight / 2 + offsetY);
+            const positionInAisle = selectedAislePosition ?? 0.5;
+            const targetY = m(rowTop + rowHeight * positionInAisle + offsetY);
             targetWorldPoint = { x: targetX, y: targetY };
           }
 
