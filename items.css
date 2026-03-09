@@ -23,7 +23,7 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 15px;
-    width: 100%;
+    width: 90%;
     overflow-y: auto;
     max-height: calc(480px - 200px);
     box-sizing: border-box;
@@ -34,7 +34,7 @@
     border: 2px solid #24b4fb;
     border-radius: 0.9em;
     cursor: pointer;
-    padding: 1.2em 1em;
+    padding: 1.2em 0.5em;
     transition: background-color 0.12s linear, border-color 0.12s linear;
     display: flex;
     flex-direction: column;
