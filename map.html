@@ -204,7 +204,6 @@
       let activeRouteRequestId = 0;
       let lastRouteRequestAt = 0;
       let isRequestingRoute = false;
-      let hasInitialTargetFocus = false;
       let currentAbortController = null;
 
       let cameraScale = 1;
@@ -595,12 +594,7 @@
         layer.batchDraw();
 
         applyFollowZoom();
-        if (targetWorldPoint && !hasInitialTargetFocus) {
-          focusCameraOnTarget();
-          hasInitialTargetFocus = true;
-        } else {
-          updateFollowCamera();
-        }
+        updateFollowCamera();
         syncUser();
 
         requestAndRenderPath();
