@@ -67,11 +67,12 @@ button {
     background-color: #0077ff;
     border-radius: 0.9em;
     cursor: pointer;
-    padding: 1.6em 1.3em;
+    padding: 1em 1.3em;
     transition: background-color 0.12s linear, border-color 0.12s linear;
-    font-size: 50px;
+    font-size: 56px;
     width: 100%;
     min-height: 108px;
+    line-height: 1;
 }
 
 button span {
@@ -81,6 +82,7 @@ button span {
     gap: 12px;
     color: #fff;
     font-weight: 600;
+    line-height: 1;
 }
 
 button .icon {
