@@ -5,40 +5,28 @@
 }
 
 body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+    font-family: 'Segoe UI', 'Noto Sans', Arial, sans-serif;
+    background: #e9eef5;
     min-height: 100vh;
     display: flex;
     justify-content: center;
     align-items: center;
     overflow: hidden;
-    padding: 20px;
-}
-
-body::before {
-    content: '';
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    background: radial-gradient(circle at 20% 50%, rgba(36, 180, 251, 0.08), transparent 50%),
-                radial-gradient(circle at 80% 80%, rgba(147, 197, 253, 0.08), transparent 50%);
-    z-index: 0;
+    padding: 12px;
 }
 
 .container {
     position: relative;
-    z-index: 1;
     display: flex;
     flex-direction: column;
-    gap: 30px;
+    gap: 20px;
     align-items: center;
     justify-content: space-between;
-    padding: 40px 30px;
-    background: rgba(255, 255, 255, 0.8);
-    backdrop-filter: blur(10px);
-    border-radius: 24px;
-    border: 1px solid rgba(255, 255, 255, 0.5);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+    padding: 24px;
+    background: #ffffff;
+    border-radius: 16px;
+    border: 1px solid #d2dbe8;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
     width: 800px;
     height: 480px;
 }
@@ -68,7 +56,7 @@ h1 {
 .button-container {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 20px;
     width: 100%;
     flex: 1;
     justify-content: center;
@@ -79,18 +67,18 @@ button {
     background-color: #0077ff;
     border-radius: 0.9em;
     cursor: pointer;
-    padding: 1.8em 1.5em;
-    transition: all ease-in-out 0.2s;
+    padding: 1.6em 1.3em;
+    transition: background-color 0.12s linear, border-color 0.12s linear;
     font-size: 28px;
     width: 100%;
-    min-height: 120px;
+    min-height: 108px;
 }
 
 button span {
     display: flex;
     justify-content: center;
     align-items: center;
-    gap: 15px;
+    gap: 12px;
     color: #fff;
     font-weight: 600;
 }
@@ -100,7 +88,6 @@ button .icon {
     line-height: 1;
 }
 
-/* Back button - compact style for navigation */
 .back-button {
     background-color: #6b7280;
     border: 2px solid #6b7280;
@@ -120,27 +107,9 @@ button .icon {
 
 button:hover {
     background-color: #005ae2;
+    border-color: #1fa6e7;
 }
 
-@keyframes fadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(20px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.container {
-    animation: fadeIn 0.6s ease-out;
-}
-
-button:nth-child(2) {
-    animation: fadeIn 0.6s ease-out 0.1s backwards;
-}
-
-button:nth-child(3) {
-    animation: fadeIn 0.6s ease-out 0.2s backwards;
+button:active {
+    background-color: #0052cc;
 }

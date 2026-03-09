@@ -35,7 +35,7 @@
     border-radius: 0.9em;
     cursor: pointer;
     padding: 1.5em 1em;
-    transition: all ease-in-out 0.2s;
+    transition: background-color 0.12s linear, border-color 0.12s linear;
     font-size: 22px;
     min-height: 100px;
     display: flex;
@@ -46,7 +46,6 @@
 .category-button:hover {
     background-color: #005ae2;
     border-color: #24b4fb;
-    transform: scale(1.02);
 }
 
 .category-button span {

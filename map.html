@@ -5,12 +5,6 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Supermarket Map</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="styles.css" />
 
     <script src="https://unpkg.com/konva@9/konva.min.js"></script>
@@ -171,6 +165,7 @@
       const arrivalOverlay = document.getElementById("arrivalOverlay");
       const arrivalMessage = document.getElementById("arrivalMessage");
       const queryParams = new URLSearchParams(window.location.search);
+      const LAYOUT_CACHE_KEY = "store-layout-v1";
 
       function normalizeAisleLabel(value) {
         if (!value) return "";
@@ -270,10 +265,12 @@
       let currentAbortController = null;
       let hasReachedTarget = false;
       let gameLoopId = null;
+      let lastRouteStart = null;
 
       let cameraScale = 1;
       const FOLLOW_ZOOM_FACTOR = 3.0;
-      const ROUTE_UPDATE_INTERVAL_MS = 33;
+      const ROUTE_UPDATE_INTERVAL_MS = 250;
+      const ROUTE_RECALCULATE_DISTANCE_METERS = 0.8;
       const ARRIVAL_THRESHOLD_METERS = 1.2;
       const EXIT_MAP_DELAY_MS = 2200;
 
@@ -301,6 +298,21 @@
           x: (pose.xPercent / 100) * m(WORLD_WIDTH),
           y: (pose.yPercent / 100) * m(WORLD_HEIGHT),
         };
+      }
+
+      function shouldRecalculateRoute() {
+        if (!lastRouteStart) {
+          return true;
+        }
+
+        const user = getUserWorldPosition();
+        const userX = user.x / PIXELS_PER_METER;
+        const userY = user.y / PIXELS_PER_METER;
+
+        return (
+          Math.hypot(userX - lastRouteStart.x, userY - lastRouteStart.y) >=
+          ROUTE_RECALCULATE_DISTANCE_METERS
+        );
       }
 
       function exitMapView() {
@@ -516,6 +528,7 @@
         if (!targetWorldPoint) {
           clearRouteLine();
           isRequestingRoute = false;
+          lastRouteStart = null;
           return;
         }
 
@@ -543,7 +556,8 @@
           y: targetWorldPoint.y / PIXELS_PER_METER,
         };
 
-        const apiStartTime = performance.now();
+        lastRouteStart = start;
+
         try {
           const response = await fetch(`${API_URL}/path`, {
             method: "POST",
@@ -553,9 +567,6 @@
             body: JSON.stringify({ start, end }),
             signal: currentAbortController.signal,
           });
-
-          const apiEndTime = performance.now();
-          const apiDuration = apiEndTime - apiStartTime;
 
           if (requestId !== activeRouteRequestId) {
             isRequestingRoute = false;
@@ -571,14 +582,9 @@
           }
 
           const result = await response.json();
-          
-          const drawStartTime = performance.now();
+
           drawRouteLine(result.points || []);
-          const drawEndTime = performance.now();
-          const drawDuration = drawEndTime - drawStartTime;
-          
-          console.log(`API: ${apiDuration.toFixed(1)}ms | Draw: ${drawDuration.toFixed(1)}ms | Total: ${(apiDuration + drawDuration).toFixed(1)}ms`);
-          
+
           lastRouteRequestAt = Date.now();
           isRequestingRoute = false;
         } catch (error) {
@@ -595,8 +601,22 @@
       }
 
       async function loadLayout() {
-        const res = await fetch("store_layout.json");
-        const layout = await res.json();
+        let layout = null;
+
+        const cachedLayout = sessionStorage.getItem(LAYOUT_CACHE_KEY);
+        if (cachedLayout) {
+          try {
+            layout = JSON.parse(cachedLayout);
+          } catch (_error) {
+            layout = null;
+          }
+        }
+
+        if (!layout) {
+          const res = await fetch("store_layout.json", { cache: "force-cache" });
+          layout = await res.json();
+          sessionStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify(layout));
+        }
 
         WORLD_WIDTH = layout.world.width;
         WORLD_HEIGHT = layout.world.height;
@@ -611,6 +631,7 @@
         routeLine = null;
         targetWorldPoint = null;
         hasReachedTarget = false;
+        lastRouteStart = null;
 
         // Compute bounds of all shelves 
         let minX = Infinity;
@@ -789,12 +810,13 @@
           const now = Date.now();
           if (
             targetWorldPoint &&
-            now - lastRouteRequestAt >= ROUTE_UPDATE_INTERVAL_MS
+            now - lastRouteRequestAt >= ROUTE_UPDATE_INTERVAL_MS &&
+            shouldRecalculateRoute()
           ) {
             requestAndRenderPath();
           }
         }
-      }, 1000 / 60); // 60 FPS
+      }, 1000 / 30); // 30 FPS
 
       loadLayout();
       syncUser();

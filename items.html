@@ -4,9 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Items - CaddyMate</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="items.css">
 </head>
@@ -25,13 +22,33 @@
 
     <script>
         const API_URL = 'http://localhost:5000/api';
-        
-        // Get category ID and name from URL parameters
+        const ITEMS_CACHE_PREFIX = 'items-cache-v1-';
+        const ITEMS_CACHE_TTL_MS = 5 * 60 * 1000;
+
         const urlParams = new URLSearchParams(window.location.search);
         const categoryId = urlParams.get('category');
         const categoryName = urlParams.get('name');
 
-        // Update page title
+        function readCache(key) {
+            const raw = sessionStorage.getItem(key);
+            if (!raw) {
+                return null;
+            }
+
+            try {
+                return JSON.parse(raw);
+            } catch (_error) {
+                return null;
+            }
+        }
+
+        function writeCache(key, value) {
+            sessionStorage.setItem(key, JSON.stringify({
+                savedAt: Date.now(),
+                value
+            }));
+        }
+
         if (categoryName) {
             const emoji = getCategoryIcon(categoryName);
             document.getElementById('categoryTitle').textContent = `${emoji} ${categoryName}`;
@@ -58,49 +75,53 @@
             return icons[categoryName] || '📦';
         }
 
+        function renderItems(container, items) {
+            if (!Array.isArray(items) || items.length === 0) {
+                container.innerHTML = '<div class="no-data">No items in this category</div>';
+                return;
+            }
+
+            container.innerHTML = items.map(item => `
+                <button class="item-card" data-item-name="${encodeURIComponent(item.name)}" data-item-aisle="${encodeURIComponent(item.aisle || '')}" data-item-aisle-position="${encodeURIComponent(item.aisle_position ?? '')}">
+                    <div class="item-name">${item.name}</div>
+                    ${item.aisle ? `<div class="item-aisle">Aisle ${item.aisle}</div>` : ''}
+                </button>
+            `).join('');
+        }
+
         async function loadItems() {
             const container = document.getElementById('itemsContainer');
-            
+
             if (!categoryId) {
                 container.innerHTML = '<div class="error">No category selected</div>';
                 return;
             }
 
+            const cacheKey = `${ITEMS_CACHE_PREFIX}${categoryId}`;
+            const cached = readCache(cacheKey);
+
+            if (cached?.value) {
+                renderItems(container, cached.value);
+                if (Date.now() - cached.savedAt < ITEMS_CACHE_TTL_MS) {
+                    return;
+                }
+            }
+
             try {
-                const response = await fetch(`${API_URL}/items/${categoryId}`);
-                
+                const response = await fetch(`${API_URL}/items/${categoryId}`, { cache: 'force-cache' });
+
                 if (!response.ok) {
                     throw new Error('Failed to fetch items');
                 }
 
                 const items = await response.json();
-
-                if (items.length === 0) {
-                    container.innerHTML = '<div class="no-data">No items in this category</div>';
-                    return;
-                }
-
-                // Create clickable item cards
-                container.innerHTML = items.map(item => `
-                    <button class="item-card" data-item-name="${encodeURIComponent(item.name)}" data-item-aisle="${encodeURIComponent(item.aisle || '')}" data-item-aisle-position="${encodeURIComponent(item.aisle_position ?? '')}">
-                        <div class="item-name">${item.name}</div>
-                        ${item.aisle ? `<div class="item-aisle">Aisle ${item.aisle}</div>` : ''}
-                    </button>
-                `).join('');
-
-                const cards = container.querySelectorAll('.item-card');
-                cards.forEach(card => {
-                    card.addEventListener('click', () => {
-                        const itemName = decodeURIComponent(card.dataset.itemName || '');
-                        const aisle = decodeURIComponent(card.dataset.itemAisle || '');
-                        const aislePosition = decodeURIComponent(card.dataset.itemAislePosition || '');
-                        openItemOnMap(itemName, aisle, aislePosition);
-                    });
-                });
-
+                writeCache(cacheKey, items);
+                renderItems(container, items);
             } catch (error) {
                 console.error('Error loading items:', error);
-                container.innerHTML = '<div class="error">Failed to load items. Please try again.</div>';
+                if (!cached?.value) {
+                    container.innerHTML = '<div class="error">Failed to load items. Please try again.</div>';
+                }
             }
         }
 
@@ -122,7 +143,18 @@
             window.location.href = `map.html?${query.toString()}`;
         }
 
-        // Load items when page loads
+        document.getElementById('itemsContainer').addEventListener('click', (event) => {
+            const card = event.target.closest('.item-card');
+            if (!card) {
+                return;
+            }
+
+            const itemName = decodeURIComponent(card.dataset.itemName || '');
+            const aisle = decodeURIComponent(card.dataset.itemAisle || '');
+            const aislePosition = decodeURIComponent(card.dataset.itemAislePosition || '');
+            openItemOnMap(itemName, aisle, aislePosition);
+        });
+
         loadItems();
     </script>
 </body>
