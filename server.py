@@ -343,6 +343,16 @@ def get_items_by_category(category_id):
     return jsonify(items)
 
 
+@app.route('/api/items')
+def get_all_items():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM items ORDER BY name')
+    items = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(items)
+
+
 @app.route('/api/path', methods=['POST'])
 def get_path():
     payload = request.get_json(silent=True) or {}

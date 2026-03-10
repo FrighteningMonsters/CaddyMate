@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Items - CaddyMate</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="search.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <button class="back-button" onclick="window.location.href='home.html'">
+                <span>← Back</span>
+            </button>
+            <div class="search-panel">
+                <div class="search-input-row">
+                    <input id="searchInput" class="search-input" type="text" autocomplete="off" inputmode="none" placeholder="Start typing to search for an item" aria-label="Search items by name">
+                    <button id="keyboardToggle" class="keyboard-toggle" type="button" aria-expanded="true" aria-controls="touchKeyboard">Hide</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="touchKeyboard" class="touch-keyboard" aria-label="Touch keyboard">
+                    <div class="key-row">
+                        <button type="button" class="key" data-key="q">Q</button>
+                        <button type="button" class="key" data-key="w">W</button>
+                        <button type="button" class="key" data-key="e">E</button>
+                        <button type="button" class="key" data-key="r">R</button>
+                        <button type="button" class="key" data-key="t">T</button>
+                        <button type="button" class="key" data-key="y">Y</button>
+                        <button type="button" class="key" data-key="u">U</button>
+                        <button type="button" class="key" data-key="i">I</button>
+                        <button type="button" class="key" data-key="o">O</button>
+                        <button type="button" class="key" data-key="p">P</button>
+                    </div>
+                    <div class="key-row">
+                        <button type="button" class="key" data-key="a">A</button>
+                        <button type="button" class="key" data-key="s">S</button>
+                        <button type="button" class="key" data-key="d">D</button>
+                        <button type="button" class="key" data-key="f">F</button>
+                        <button type="button" class="key" data-key="g">G</button>
+                        <button type="button" class="key" data-key="h">H</button>
+                        <button type="button" class="key" data-key="j">J</button>
+                        <button type="button" class="key" data-key="k">K</button>
+                        <button type="button" class="key" data-key="l">L</button>
+                    </div>
+                    <div class="key-row key-row-bottom">
+                        <button type="button" class="key key-action" data-action="clear">Clear</button>
+                        <button type="button" class="key" data-key="z">Z</button>
+                        <button type="button" class="key" data-key="x">X</button>
+                        <button type="button" class="key" data-key="c">C</button>
+                        <button type="button" class="key" data-key="v">V</button>
+                        <button type="button" class="key" data-key="b">B</button>
+                        <button type="button" class="key" data-key="n">N</button>
+                        <button type="button" class="key" data-key="m">M</button>
+                        <button type="button" class="key key-action" data-action="backspace">Back</button>
+                    </div>
+                    <div class="key-row key-row-space">
+                        <button type="button" class="key key-space" data-action="space">Space</button>
+                    </div>
+                </div>
+
+        <div class="results-list" id="resultsContainer" aria-live="polite">
+            <div class="hint">Start typing to search for an item</div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000/api';
+        const SEARCH_ITEMS_CACHE_KEY = 'search-items-cache-v1';
+        const SEARCH_CACHE_TTL_MS = 5 * 60 * 1000;
+
+        let allItems = [];
+
+        function readCache(key) {
+            const raw = sessionStorage.getItem(key);
+            if (!raw) {
+                return null;
+            }
+
+            try {
+                return JSON.parse(raw);
+            } catch (_error) {
+                return null;
+            }
+        }
+
+        function writeCache(key, value) {
+            sessionStorage.setItem(key, JSON.stringify({
+                savedAt: Date.now(),
+                value
+            }));
+        }
+
+        function openItemOnMap(itemName, aisle, aislePosition) {
+            const payload = {
+                item: itemName || '',
+                aisle: aisle || '',
+                aisle_position: aislePosition || ''
+            };
+
+            sessionStorage.setItem('mapTarget', JSON.stringify(payload));
+
+            const query = new URLSearchParams({
+                item: itemName || '',
+                aisle: aisle || '',
+                aisle_position: aislePosition || ''
+            });
+
+            window.location.href = `map.html?${query.toString()}`;
+        }
+
+        function normalizeItemRow(item) {
+            return {
+                name: item.name || '',
+                aisle: item.aisle || '',
+                aisle_position: item.aisle_position ?? ''
+            };
+        }
+
+        function buildSearchMatches(query, items) {
+            const queryLower = query.toLowerCase().trim();
+
+            if (!queryLower) {
+                return [];
+            }
+
+            const startsWith = [];
+            const wholeWord = [];
+            const contains = [];
+
+            for (const item of items) {
+                const nameLower = item.name.toLowerCase();
+                const words = nameLower.split(/\s+/);
+
+                if (nameLower.startsWith(queryLower)) {
+                    startsWith.push(item);
+                } else if (words.includes(queryLower)) {
+                    wholeWord.push(item);
+                } else if (nameLower.includes(queryLower)) {
+                    contains.push(item);
+                }
+            }
+
+            return startsWith.concat(wholeWord, contains);
+        }
+
+        function renderResults(items) {
+            const container = document.getElementById('resultsContainer');
+
+            if (items.length === 0) {
+                container.innerHTML = '<div class="hint">No matching items found</div>';
+                container.scrollTop = 0;
+                return;
+            }
+
+            container.innerHTML = items.map(item => `
+                <button class="result-button" data-item-name="${encodeURIComponent(item.name)}" data-item-aisle="${encodeURIComponent(item.aisle || '')}" data-item-aisle-position="${encodeURIComponent(item.aisle_position ?? '')}">
+                    <span class="result-name">${item.name}</span>
+                    ${item.aisle ? `<span class="result-aisle">Aisle ${item.aisle}</span>` : ''}
+                </button>
+            `).join('');
+
+            // Scroll position to the top after filtering.
+            container.scrollTop = 0;
+        }
+
+        function applySearch() {
+            const input = document.getElementById('searchInput');
+            const query = input.value || '';
+            const queryLower = query.toLowerCase().trim();
+            const container = document.getElementById('resultsContainer');
+
+            if (!queryLower) {
+                container.innerHTML = '<div class="hint">Start typing to search for an item</div>';
+                container.scrollTop = 0;
+                return;
+            }
+
+            const matches = buildSearchMatches(query, allItems);
+            renderResults(matches);
+        }
+
+        async function loadAllItems() {
+            const container = document.getElementById('resultsContainer');
+            const cached = readCache(SEARCH_ITEMS_CACHE_KEY);
+
+            if (cached?.value) {
+                allItems = cached.value.map(normalizeItemRow);
+                if (Date.now() - cached.savedAt < SEARCH_CACHE_TTL_MS) {
+                    return;
+                }
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/items`, { cache: 'force-cache' });
+
+                if (!response.ok) {
+                    throw new Error('Failed to fetch items');
+                }
+
+                const items = await response.json();
+                allItems = items.map(normalizeItemRow);
+                writeCache(SEARCH_ITEMS_CACHE_KEY, allItems);
+            } catch (error) {
+                console.error('Error loading search items:', error);
+                if (!allItems.length) {
+                    container.innerHTML = '<div class="error">Failed to load items. Please try again.</div>';
+                }
+            }
+        }
+
+        document.getElementById('searchInput').addEventListener('input', applySearch);
+
+        function setKeyboardExpanded(isExpanded) {
+            const keyboard = document.getElementById('touchKeyboard');
+            const toggle = document.getElementById('keyboardToggle');
+
+            keyboard.classList.toggle('collapsed', !isExpanded);
+            toggle.setAttribute('aria-expanded', String(isExpanded));
+            toggle.textContent = isExpanded ? 'Hide' : 'Show';
+        }
+
+        function insertTextAtCursor(input, text) {
+            const start = input.selectionStart ?? input.value.length;
+            const end = input.selectionEnd ?? input.value.length;
+
+            input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
+            const cursor = start + text.length;
+            input.setSelectionRange(cursor, cursor);
+        }
+
+        function removeCharBeforeCursor(input) {
+            const start = input.selectionStart ?? input.value.length;
+            const end = input.selectionEnd ?? input.value.length;
+
+            if (start !== end) {
+                input.value = `${input.value.slice(0, start)}${input.value.slice(end)}`;
+                input.setSelectionRange(start, start);
+                return;
+            }
+
+            if (start === 0) {
+                return;
+            }
+
+            input.value = `${input.value.slice(0, start - 1)}${input.value.slice(end)}`;
+            input.setSelectionRange(start - 1, start - 1);
+        }
+
+        document.getElementById('keyboardToggle').addEventListener('click', () => {
+            const expanded = document.getElementById('keyboardToggle').getAttribute('aria-expanded') === 'true';
+            setKeyboardExpanded(!expanded);
+        });
+
+        document.getElementById('touchKeyboard').addEventListener('click', (event) => {
+            const key = event.target.closest('.key');
+            if (!key) {
+                return;
+            }
+
+            const input = document.getElementById('searchInput');
+            const action = key.dataset.action;
+            const value = key.dataset.key;
+
+            input.focus();
+
+            if (action === 'clear') {
+                input.value = '';
+                applySearch();
+                return;
+            }
+
+            if (action === 'backspace') {
+                removeCharBeforeCursor(input);
+                applySearch();
+                return;
+            }
+
+            if (action === 'space') {
+                insertTextAtCursor(input, ' ');
+                applySearch();
+                return;
+            }
+
+            if (value) {
+                insertTextAtCursor(input, value);
+                applySearch();
+            }
+        });
+
+        document.getElementById('resultsContainer').addEventListener('click', (event) => {
+            const button = event.target.closest('.result-button');
+            if (!button) {
+                return;
+            }
+
+            const itemName = decodeURIComponent(button.dataset.itemName || '');
+            const aisle = decodeURIComponent(button.dataset.itemAisle || '');
+            const aislePosition = decodeURIComponent(button.dataset.itemAislePosition || '');
+            openItemOnMap(itemName, aisle, aislePosition);
+        });
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            await loadAllItems();
+            document.getElementById('searchInput').focus();
+            setKeyboardExpanded(true);
+        });
+    </script>
+</body>
+</html>
