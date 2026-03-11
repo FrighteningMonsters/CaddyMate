@@ -462,8 +462,12 @@ def get_ros_config():
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=int, default=5000)
+    args = parser.parse_args()
     convert_slam_pgm_to_png()
     print("Initializing pathfinding grid cache...")
     initialize_grid_cache(grid_resolution=1.0)
-    print("Starting server...")
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    print(f"Starting server on port {args.port}...")
+    app.run(debug=False, host='0.0.0.0', port=args.port)
