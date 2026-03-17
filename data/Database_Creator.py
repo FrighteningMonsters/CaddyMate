@@ -25,6 +25,9 @@ CREATE TABLE items (
     category_id INTEGER,
     aisle TEXT,
     aisle_position REAL,
+    x_ros REAL,
+    y_ros REAL,
+    yaw_ros REAL,
     FOREIGN KEY(category_id) REFERENCES categories(id)
 )
 """)
@@ -524,6 +527,27 @@ def parse_aisle_position(raw_value):
     return max(0.0, min(1.0, parsed))
 
 
+# ROS map frame coordinates (x, y, yaw in radians) for demo items on lobby SLAM map
+item_ros_coords = {
+    "Apples": (-4.0, 2.0, 0.0),
+    "White bread": (-1.5, 4.5, 0.0),
+    "Whole milk": (1.0, 5.5, 1.57),
+    "Chicken breast": (3.5, 4.0, 3.14),
+    "Frozen pizza": (5.0, 2.5, 0.0),
+    "White rice": (6.5, 0.5, 1.57),
+    "Crisps": (5.0, -1.5, 3.14),
+    "Still water": (3.0, -3.0, 0.0),
+    "Red wine": (1.0, -2.5, 0.0),
+    "Ale": (1.5, -2.0, 0.0),
+    "Toilet paper": (-1.5, -2.0, 1.57),
+    "Paracetamol": (-3.5, -1.0, 0.0),
+    "Shampoo": (-5.0, 1.0, 1.57),
+    "Nappies": (-3.0, 4.0, 0.0),
+    "Dog food": (7.5, 3.5, 3.14),
+    "Hummus": (0.0, 0.5, 0.0),
+}
+
+
 # Pre-calculate per-aisle item totals so unassigned items can be spaced evenly.
 aisle_totals = {}
 for category_items in categories.values():
@@ -555,9 +579,14 @@ for category, items in categories.items():
             total_in_aisle = aisle_totals.get(aisle_key, 1)
             aisle_position = aisle_seen[aisle_key] / (total_in_aisle + 1)
 
+        ros_coords = item_ros_coords.get(item_name)
+        x_ros = ros_coords[0] if ros_coords else None
+        y_ros = ros_coords[1] if ros_coords else None
+        yaw_ros = ros_coords[2] if ros_coords else None
+
         cur.execute(
-            "INSERT INTO items (name, category_id, aisle, aisle_position) VALUES (?, ?, ?, ?)",
-            (item_name, category_id, aisle_key, round(aisle_position, 3))
+            "INSERT INTO items (name, category_id, aisle, aisle_position, x_ros, y_ros, yaw_ros) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (item_name, category_id, aisle_key, round(aisle_position, 3), x_ros, y_ros, yaw_ros)
         )
 
 conn.commit()

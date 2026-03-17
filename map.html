@@ -81,6 +81,13 @@
         white-space: nowrap;
       }
 
+      #navigateBtn:disabled {
+        background: #94a3b8;
+        border-color: #64748b;
+        color: #cbd5e1;
+        cursor: not-allowed;
+      }
+
       .map-panel {
         width: 100%;
         flex: 1;
@@ -180,10 +187,109 @@
         color: #0b3b8a;
       }
 
+      .arrival-card.arrival-card--failure .arrival-title {
+        color: #b91c1c;
+      }
+
       #arrivalMessage {
         font-size: clamp(22px, 3.5vw, 32px);
         font-weight: 600;
         line-height: 1.3;
+      }
+
+      .arrival-actions {
+        margin-top: 20px;
+        display: flex;
+        justify-content: center;
+        gap: 12px;
+      }
+
+      .arrival-actions button {
+        padding: 12px 24px;
+        font-size: 16px;
+        font-weight: 600;
+        border-radius: 8px;
+        cursor: pointer;
+        border: none;
+      }
+
+      .arrival-actions .btn-retry {
+        background: #2563eb;
+        color: #fff;
+      }
+
+      .arrival-actions .btn-retry:hover {
+        background: #1d4ed8;
+      }
+
+      #disconnectBanner {
+        display: none;
+        width: 100%;
+        padding: 10px 16px;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        border-radius: 8px;
+        color: #b91c1c;
+        font-size: 14px;
+        font-weight: 600;
+        text-align: center;
+      }
+
+      #disconnectBanner.visible {
+        display: block;
+      }
+
+      #positionUnavailableBanner {
+        display: none;
+        width: 100%;
+        padding: 10px 16px;
+        background: #fffbeb;
+        border: 1px solid #fde68a;
+        border-radius: 8px;
+        color: #b45309;
+        font-size: 14px;
+        font-weight: 600;
+        text-align: center;
+      }
+
+      #positionUnavailableBanner.visible {
+        display: block;
+      }
+
+      #mapUnavailableBanner {
+        display: none;
+        width: 100%;
+        padding: 10px 16px;
+        background: #fef3c7;
+        border: 1px solid #fcd34d;
+        border-radius: 8px;
+        color: #b45309;
+        font-size: 14px;
+        font-weight: 600;
+        text-align: center;
+      }
+
+      #mapUnavailableBanner.visible {
+        display: block;
+      }
+
+      #stopNavBtn {
+        display: none;
+        flex-shrink: 0;
+        height: 36px;
+        min-height: 36px;
+        padding: 0 14px;
+        font-size: 13px;
+        border-radius: 6px;
+        background: #ef4444;
+        border: 2px solid #dc2626;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      #stopNavBtn.visible {
+        display: inline-block;
       }
     </style>
   </head>
@@ -197,12 +303,16 @@
         </div>
         <div class="header-buttons">
           <button id="navigateBtn" style="display:none;">Navigate</button>
-          <button class="back-button" onclick="window.history.back()">
+          <button id="stopNavBtn" type="button">Stop</button>
+          <button class="back-button" onclick="goBack()">
             <span>← Back</span>
           </button>
         </div>
       </div>
 
+      <div id="disconnectBanner">Connection lost</div>
+      <div id="positionUnavailableBanner">Position unavailable</div>
+      <div id="mapUnavailableBanner">Robot map not ready</div>
       <div class="map-panel">
         <div id="mapWrapper">
           <div id="mapStage"></div>
@@ -214,9 +324,12 @@
     </div>
 
     <div id="arrivalOverlay" role="alert" aria-live="assertive" aria-hidden="true">
-      <div class="arrival-card">
+      <div class="arrival-card" id="arrivalCard">
         <div class="arrival-title">Item Found</div>
         <div id="arrivalMessage"></div>
+        <div class="arrival-actions" id="arrivalActions">
+          <button id="arrivalDismissBtn" type="button" class="btn-retry" style="display:none;">Try Again</button>
+        </div>
       </div>
     </div>
 
@@ -229,7 +342,6 @@
       const arrivalOverlay = document.getElementById("arrivalOverlay");
       const arrivalMessage = document.getElementById("arrivalMessage");
       const queryParams = new URLSearchParams(window.location.search);
-      const LAYOUT_CACHE_KEY = "store-layout-v1";
 
       function normalizeAisleLabel(value) {
         if (!value) return "";
@@ -249,19 +361,6 @@
         return normalized;
       }
 
-      function parseAislePosition(value) {
-        if (value === null || value === undefined || value === "") {
-          return null;
-        }
-
-        const parsed = Number.parseFloat(value);
-        if (!Number.isFinite(parsed)) {
-          return null;
-        }
-
-        return Math.max(0, Math.min(1, parsed));
-      }
-
       function getStoredMapTarget() {
         try {
           const raw = sessionStorage.getItem("mapTarget");
@@ -276,9 +375,6 @@
         queryParams.get("item") || storedTarget?.item || "";
       const selectedAisleLabel = normalizeAisleLabel(
         queryParams.get("aisle") || storedTarget?.aisle || "",
-      );
-      const selectedAislePosition = parseAislePosition(
-        queryParams.get("aisle_position") ?? storedTarget?.aisle_position,
       );
       function parseRosCoord(val) {
         if (val === null || val === undefined || val === "") return null;
@@ -331,19 +427,9 @@
       let targetMarker = null;
       let targetLabel = null;
       let routeLine = null;
-      let activeRouteRequestId = 0;
-      let lastRouteRequestAt = 0;
-      let isRequestingRoute = false;
-      let currentAbortController = null;
       let hasReachedTarget = false;
-      let gameLoopId = null;
-      let lastRouteStart = null;
 
       let cameraScale = 1;
-      const FOLLOW_ZOOM_FACTOR = 3.0;
-      const ROUTE_UPDATE_INTERVAL_MS = 33;
-      const ROUTE_RECALCULATE_DISTANCE_METERS = 0.8;
-      const ARRIVAL_THRESHOLD_METERS = 0.2;
       const EXIT_MAP_DELAY_MS = 2200;
 
       const stage = new Konva.Stage({
@@ -365,120 +451,32 @@
         };
       }
 
-      function getUserWorldPosition() {
-        return {
-          x: (pose.xPercent / 100) * m(WORLD_WIDTH),
-          y: (pose.yPercent / 100) * m(WORLD_HEIGHT),
-        };
-      }
-
-      function shouldRecalculateRoute() {
-        if (!lastRouteStart) {
-          return true;
-        }
-
-        const user = getUserWorldPosition();
-        const userX = user.x / PIXELS_PER_METER;
-        const userY = user.y / PIXELS_PER_METER;
-
-        return (
-          Math.hypot(userX - lastRouteStart.x, userY - lastRouteStart.y) >=
-          ROUTE_RECALCULATE_DISTANCE_METERS
-        );
-      }
-
       function exitMapView() {
+        if (navGoalSentAt && !hasReachedTarget && ros?.isConnected) {
+          cancelNavigation();
+          setTimeout(doGoBack, 100);
+        } else {
+          doGoBack();
+        }
+      }
+
+      function goBack() {
+        if (navGoalSentAt && !hasReachedTarget && ros?.isConnected) {
+          cancelNavigation();
+          setTimeout(doGoBack, 100);
+        } else {
+          doGoBack();
+        }
+      }
+
+      function doGoBack() {
         if (window.history.length > 1) {
           window.history.back();
-          return;
-        }
-
-        if (document.referrer) {
+        } else if (document.referrer) {
           window.location.href = document.referrer;
-          return;
-        }
-
-        window.location.href = "items.html";
-      }
-
-      function checkTargetArrival() {
-        if (hasReachedTarget || !targetWorldPoint) {
-          return false;
-        }
-
-        const user = getUserWorldPosition();
-        const dx = targetWorldPoint.x - user.x;
-        const dy = targetWorldPoint.y - user.y;
-        const distanceMeters = Math.hypot(dx, dy) / PIXELS_PER_METER;
-
-        if (distanceMeters > ARRIVAL_THRESHOLD_METERS) {
-          return false;
-        }
-
-        hasReachedTarget = true;
-
-        const targetName =
-          selectedItemName || formatAisleDisplay(selectedAisleLabel) || "the selected item";
-
-        targetBanner.textContent = `Arrived at ${targetName}`;
-        arrivalMessage.textContent = `You are next to ${targetName}`;
-        arrivalOverlay.classList.add("visible");
-        arrivalOverlay.setAttribute("aria-hidden", "false");
-        clearRouteLine();
-
-        if (currentAbortController) {
-          currentAbortController.abort();
-        }
-
-        if (typeof gameLoopId === "number") {
-          clearInterval(gameLoopId);
-        }
-
-        window.setTimeout(() => {
-          exitMapView();
-        }, EXIT_MAP_DELAY_MS);
-
-        return true;
-      }
-
-      function centerCameraOn(worldX, worldY) {
-        const targetX = stage.width() / 2 - worldX * cameraScale;
-        const targetY = stage.height() / 2 - worldY * cameraScale;
-
-        const worldPixelWidth = m(WORLD_WIDTH) * cameraScale;
-        const worldPixelHeight = m(WORLD_HEIGHT) * cameraScale;
-
-        let clampedX = targetX;
-        let clampedY = targetY;
-
-        if (worldPixelWidth <= stage.width()) {
-          clampedX = (stage.width() - worldPixelWidth) / 2;
         } else {
-          const minX = stage.width() - worldPixelWidth;
-          const maxX = 0;
-          clampedX = Math.max(minX, Math.min(maxX, targetX));
+          window.location.href = "items.html";
         }
-
-        if (worldPixelHeight <= stage.height()) {
-          clampedY = (stage.height() - worldPixelHeight) / 2;
-        } else {
-          const minY = stage.height() - worldPixelHeight;
-          const maxY = 0;
-          clampedY = Math.max(minY, Math.min(maxY, targetY));
-        }
-
-        stage.position({ x: clampedX, y: clampedY });
-      }
-
-      function updateFollowCamera() {
-        const user = getUserWorldPosition();
-        centerCameraOn(user.x, user.y);
-      }
-
-      function focusCameraOnTarget() {
-        if (!targetWorldPoint) return;
-        centerCameraOn(targetWorldPoint.x, targetWorldPoint.y);
-        syncUser();
       }
 
       function applyFollowZoom() {
@@ -488,37 +486,28 @@
           stage.width() / worldPixelWidth,
           stage.height() / worldPixelHeight,
         );
-
-        if (slamMode) {
-          cameraScale = fitScale;
-          stage.scale({ x: cameraScale, y: cameraScale });
-          stage.position({
-            x: (stage.width() - worldPixelWidth * cameraScale) / 2,
-            y: (stage.height() - worldPixelHeight * cameraScale) / 2,
-          });
-        } else {
-          cameraScale = Math.min(fitScale * FOLLOW_ZOOM_FACTOR, 5);
-          stage.scale({ x: cameraScale, y: cameraScale });
-        }
+        cameraScale = fitScale;
+        stage.scale({ x: cameraScale, y: cameraScale });
+        stage.position({
+          x: (stage.width() - worldPixelWidth * cameraScale) / 2,
+          y: (stage.height() - worldPixelHeight * cameraScale) / 2,
+        });
       }
 
       function syncUser() {
-        let user;
-        if (slamMode && robotPixelPos) {
-          user = robotPixelPos;
-        } else {
-          user = getUserWorldPosition();
+        if (!slamMode || !robotPixelPos) {
+          userMarker.style.display = "none";
+          userArrow.style.display = "none";
+          return;
         }
-
-        const p = worldToScreen(user.x, user.y);
-
+        const p = worldToScreen(robotPixelPos.x, robotPixelPos.y);
+        userMarker.style.display = "";
+        userArrow.style.display = "";
         userMarker.style.left = p.x + "px";
         userMarker.style.top = p.y + "px";
-
         userArrow.style.left = p.x + "px";
         userArrow.style.top = p.y + "px";
-
-        userArrow.style.transform = `translate(-50%,-100%) rotate(${pose.angle + 90}deg)`;
+        userArrow.style.transform = `translate(-50%,-100%) rotate(${pose.angle + 270}deg)`;
       }
 
       function upsertTargetMarker() {
@@ -579,344 +568,59 @@
         }
       }
 
-      function drawRouteLine(routePoints) {
-        if (!routePoints || routePoints.length < 2) {
-          clearRouteLine();
-          return;
-        }
-
-        const flattened = routePoints.flatMap((point) => [m(point.x), m(point.y)]);
-
-        if (!routeLine) {
-          routeLine = new Konva.Line({
-            points: flattened,
-            stroke: "#2563eb",
-            strokeWidth: 7,
-            lineCap: "round",
-            lineJoin: "round",
-          });
-          layer.add(routeLine);
-          // Keep route above floor/shelves but below target marker
-          if (targetMarker) targetMarker.moveToTop();
-          if (targetLabel) targetLabel.moveToTop();
-        } else {
-          routeLine.points(flattened);
-        }
-
-        layer.batchDraw();
-      }
-
-      async function requestAndRenderPath() {
-        if (hasReachedTarget) {
-          return;
-        }
-
-        if (!targetWorldPoint) {
-          clearRouteLine();
-          isRequestingRoute = false;
-          lastRouteStart = null;
-          return;
-        }
-
-        if (isRequestingRoute) {
-          return; // Skip if a request is already in progress
-        }
-
-        isRequestingRoute = true;
-        const user = getUserWorldPosition();
-        const requestId = ++activeRouteRequestId;
-
-        // Cancel previous request if still pending
-        if (currentAbortController) {
-          currentAbortController.abort();
-        }
-        currentAbortController = new AbortController();
-
-        const start = {
-          x: user.x / PIXELS_PER_METER,
-          y: user.y / PIXELS_PER_METER,
-        };
-
-        const end = {
-          x: targetWorldPoint.x / PIXELS_PER_METER,
-          y: targetWorldPoint.y / PIXELS_PER_METER,
-        };
-
-        lastRouteStart = start;
-
-        try {
-          const response = await fetch(`${API_URL}/path`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ start, end }),
-            signal: currentAbortController.signal,
-          });
-
-          if (requestId !== activeRouteRequestId) {
-            isRequestingRoute = false;
-            return;
-          }
-
-          if (!response.ok) {
-            console.error(`Path request failed: ${response.status} ${response.statusText}`);
-            clearRouteLine();
-            isRequestingRoute = false;
-            lastRouteRequestAt = Date.now();
-            return;
-          }
-
-          const result = await response.json();
-
-          drawRouteLine(result.points || []);
-
-          lastRouteRequestAt = Date.now();
-          isRequestingRoute = false;
-        } catch (error) {
-          if (error.name === 'AbortError') {
-            // Request was cancelled, this is expected
-            isRequestingRoute = false;
-            return;
-          }
-          console.error('Path request error:', error);
-          clearRouteLine();
-          isRequestingRoute = false;
-          lastRouteRequestAt = Date.now();
-        }
-      }
-
-      async function loadLayout() {
-        let layout = null;
-
-        const cachedLayout = sessionStorage.getItem(LAYOUT_CACHE_KEY);
-        if (cachedLayout) {
-          try {
-            layout = JSON.parse(cachedLayout);
-          } catch (_error) {
-            layout = null;
-          }
-        }
-
-        if (!layout) {
-          const res = await fetch("store_layout.json", { cache: "force-cache" });
-          layout = await res.json();
-          sessionStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify(layout));
-        }
-
-        WORLD_WIDTH = layout.world.width;
-        WORLD_HEIGHT = layout.world.height;
-
-        drawLayout(layout);
-      }
-
-      function drawLayout(layout) {
+      function showMapUnavailablePlaceholder() {
         layer.destroyChildren();
         targetMarker = null;
         targetLabel = null;
         routeLine = null;
         targetWorldPoint = null;
-        hasReachedTarget = false;
-        lastRouteStart = null;
-
-        // Compute bounds of all shelves 
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-
-        layout.shelves.forEach((shelf) => {
-          shelf.polygon.forEach(([x, y]) => {
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
-          });
-        });
-
-        const padding = 1; // meters of space around store
-
-        WORLD_WIDTH = maxX - minX + padding * 2;
-        WORLD_HEIGHT = maxY - minY + padding * 2;
-
-        const offsetX = padding - minX;
-        const offsetY = padding - minY;
-
-        // Draw floor 
+        const w = stage.width();
+        const h = stage.height();
+        WORLD_WIDTH = w;
+        WORLD_HEIGHT = h;
+        PIXELS_PER_METER = 1;
         layer.add(
           new Konva.Rect({
             x: 0,
             y: 0,
-            width: m(WORLD_WIDTH),
-            height: m(WORLD_HEIGHT),
-            fill: "#f8fafc",
+            width: w,
+            height: h,
+            fill: "#e2e8f0",
           }),
         );
-
-        // Draw shelves 
-        layout.shelves.forEach((shelf) => {
-          const flat = shelf.polygon
-            .map(([x, y]) => [x + offsetX, y + offsetY])
-            .flat()
-            .map((v) => m(v));
-
-          layer.add(
-            new Konva.Line({
-              points: flat,
-              closed: true,
-              fill: "#9ca3af",
-              stroke: "#6b7280",
-              strokeWidth: 4,
-            }),
-          );
-        });
-
-        // Draw aisle labels 
-        if (layout.aisles) {
-          const rowHeight = layout.shelf_length ?? 16.75;
-          const rowGap = layout.row_gap ?? 4;
-          const startY = layout.start_y ?? 0;
-
-          const matchedAisle = layout.aisles.find(
-            (a) => normalizeAisleLabel(a.label) === selectedAisleLabel,
-          );
-
-          if (matchedAisle) {
-            const targetX = m(matchedAisle.x + offsetX);
-            const rowTop = startY + matchedAisle.row * (rowHeight + rowGap);
-            const positionInAisle = selectedAislePosition ?? 0.5;
-            const targetY = m(rowTop + rowHeight * positionInAisle + offsetY);
-            targetWorldPoint = { x: targetX, y: targetY };
-          }
-
-          layout.aisles.forEach((a) => {
-            const x = m(a.x + offsetX);
-
-            const rowTop = startY + a.row * (rowHeight + rowGap);
-            const rowBottom = rowTop + rowHeight;
-
-            // top label
-            layer.add(
-              new Konva.Text({
-                x: x - 55,
-                y: m(rowTop + offsetY) + 4,
-                width: 110,
-                align: "center",
-                text: formatAisleDisplay(a.label),
-                fontSize: 28,
-                fill: "#334155",
-              }),
-            );
-
-            // bottom label
-            layer.add(
-              new Konva.Text({
-                x: x - 55,
-                y: m(rowBottom + offsetY) - 34,
-                width: 110,
-                align: "center",
-                text: formatAisleDisplay(a.label),
-                fontSize: 28,
-                fill: "#334155",
-              }),
-            );
-          });
-        }
-
-        upsertTargetMarker();
-
+        layer.add(
+          new Konva.Text({
+            x: w / 2 - 100,
+            y: h / 2 - 20,
+            width: 200,
+            text: "Map unavailable",
+            fontSize: 18,
+            fill: "#64748b",
+            align: "center",
+          }),
+        );
         layer.batchDraw();
-
-        applyFollowZoom();
-        updateFollowCamera();
-        syncUser();
-
-        if (checkTargetArrival()) {
-          return;
-        }
-
-        requestAndRenderPath();
       }
 
       window.addEventListener("resize", () => {
         stage.width(container.clientWidth);
         stage.height(container.clientHeight);
-
         applyFollowZoom();
-        if (!slamMode) {
-          updateFollowCamera();
-        }
         syncUser();
       });
-
-      // Keyboard controls
-      const keys = {};
-
-      window.addEventListener("keydown", (e) => {
-        keys[e.key.toLowerCase()] = true;
-      });
-
-      window.addEventListener("keyup", (e) => {
-        keys[e.key.toLowerCase()] = false;
-      });
-
-      // Game loop for continuous movement
-      const ROTATION_SPEED = 3; // degrees per frame
-      const MOVE_SPEED = 0.2; // percent per frame
-
-      gameLoopId = setInterval(() => {
-        let moved = false;
-
-        // Turning
-        if (keys["a"]) {
-          pose.angle -= ROTATION_SPEED;
-          moved = true;
-        }
-        if (keys["d"]) {
-          pose.angle += ROTATION_SPEED;
-          moved = true;
-        }
-
-        // Moving forward
-        if (keys["w"]) {
-          const angleRad = (pose.angle * Math.PI) / 180;
-          pose.xPercent += Math.cos(angleRad) * MOVE_SPEED;
-          pose.yPercent += Math.sin(angleRad) * MOVE_SPEED;
-          pose.xPercent = Math.max(0, Math.min(100, pose.xPercent));
-          pose.yPercent = Math.max(0, Math.min(100, pose.yPercent));
-          moved = true;
-        }
-
-        if (moved) {
-          if (!slamMode) {
-            updateFollowCamera();
-          }
-          syncUser();
-
-          if (checkTargetArrival()) {
-            return;
-          }
-
-          const now = Date.now();
-          if (
-            targetWorldPoint &&
-            now - lastRouteRequestAt >= ROUTE_UPDATE_INTERVAL_MS &&
-            shouldRecalculateRoute()
-          ) {
-            requestAndRenderPath();
-          }
-        }
-      }, 1000 / 60); // 60 FPS
 
       let slamMode = false;
       let mapInfo = null;
       let robotPixelPos = null;
       let ros = null;
+      let lastAmclReceivedAt = 0;
+      const AMCL_TIMEOUT_MS = 5000;
+      let amclCheckIntervalId = null;
 
       async function loadSlamLayout() {
         const imgRes = await fetch("lobby_map.png", { cache: "force-cache" });
         if (!imgRes.ok) {
-          loadLayout();
+          showMapUnavailablePlaceholder();
           syncUser();
           return;
         }
@@ -935,7 +639,6 @@
         targetLabel = null;
         routeLine = null;
         hasReachedTarget = false;
-        lastRouteStart = null;
         const mapRect = new Konva.Rect({
           x: 0,
           y: 0,
@@ -968,9 +671,21 @@
           userMarker.style.display = "none";
           userArrow.style.display = "none";
         }
-        if (targetWorldPoint && selectedXRos != null && selectedYRos != null) {
-          document.getElementById("navigateBtn").style.display = "inline-block";
+        updateNavigateButtonState();
+      }
+
+      function updateNavigateButtonState() {
+        const navBtn = document.getElementById("navigateBtn");
+        if (!navBtn) return;
+        const hasValidTarget = slamMode && targetWorldPoint && selectedXRos != null && selectedYRos != null;
+        if (!hasValidTarget) {
+          navBtn.style.display = "none";
+          return;
         }
+        navBtn.style.display = "inline-block";
+        const isConnected = ros && ros.isConnected;
+        navBtn.disabled = !isConnected;
+        navBtn.title = isConnected ? "" : "Connect to robot to use navigation";
       }
 
       function rosToPixel(xRos, yRos) {
@@ -992,6 +707,8 @@
             ros.on("connection", () => {
               document.getElementById("rosStatus").textContent = "Connected";
               document.getElementById("rosStatus").style.color = "#22c55e";
+              document.getElementById("disconnectBanner")?.classList.remove("visible");
+              updateNavigateButtonState();
               const amclTopic = new ROSLIB.Topic({
                 ros,
                 name: "/amcl_pose",
@@ -1035,49 +752,119 @@
               });
 
               amclTopic.subscribe((msg) => {
-                const p = msg.pose?.pose?.position;
-                if (p && mapInfo) {
-                  const px = rosToPixel(p.x, p.y);
-                  if (px) {
-                    robotPixelPos = px;
-                    pose.xPercent = (px.x / mapInfo.width_px) * 100;
-                    pose.yPercent = (px.y / mapInfo.height_px) * 100;
-                    userMarker.style.display = "";
-                    userArrow.style.display = "";
-                    syncUser();
+                const poseMsg = msg.pose?.pose;
+                if (!poseMsg || !mapInfo) return;
+                const p = poseMsg.position;
+                const o = poseMsg.orientation;
+                const px = rosToPixel(p.x, p.y);
+                if (px) {
+                  lastAmclReceivedAt = Date.now();
+                  document.getElementById("positionUnavailableBanner")?.classList.remove("visible");
+                  robotPixelPos = px;
+                  pose.xPercent = (px.x / mapInfo.width_px) * 100;
+                  pose.yPercent = (px.y / mapInfo.height_px) * 100;
+                  if (o && typeof o.x === "number" && typeof o.y === "number" && typeof o.z === "number" && typeof o.w === "number") {
+                    const yaw = Math.atan2(2 * (o.w * o.z + o.x * o.y), 1 - 2 * (o.y * o.y + o.z * o.z));
+                    pose.angle = (yaw * 180) / Math.PI;
                   }
+                  userMarker.style.display = "";
+                  userArrow.style.display = "";
+                  syncUser();
                 }
               });
+              if (amclCheckIntervalId) clearInterval(amclCheckIntervalId);
+              amclCheckIntervalId = setInterval(() => {
+                if (!slamMode || !ros?.isConnected) return;
+                const stale = Date.now() - lastAmclReceivedAt > AMCL_TIMEOUT_MS;
+                if (stale && !robotPixelPos) {
+                  document.getElementById("positionUnavailableBanner")?.classList.add("visible");
+                }
+              }, 1000);
             });
             ros.on("error", () => {
               document.getElementById("rosStatus").textContent = "Disconnected";
               document.getElementById("rosStatus").style.color = "#ef4444";
+              document.getElementById("disconnectBanner")?.classList.add("visible");
+              document.getElementById("positionUnavailableBanner")?.classList.remove("visible");
+              if (amclCheckIntervalId) { clearInterval(amclCheckIntervalId); amclCheckIntervalId = null; }
+              updateNavigateButtonState();
             });
             ros.on("close", () => {
               document.getElementById("rosStatus").textContent = "Disconnected";
               document.getElementById("rosStatus").style.color = "#ef4444";
+              document.getElementById("disconnectBanner")?.classList.add("visible");
+              document.getElementById("positionUnavailableBanner")?.classList.remove("visible");
+              if (amclCheckIntervalId) { clearInterval(amclCheckIntervalId); amclCheckIntervalId = null; }
+              updateNavigateButtonState();
             });
           })
           .catch(() => {
             document.getElementById("rosStatus").textContent = "Disconnected";
             document.getElementById("rosStatus").style.color = "#ef4444";
+            document.getElementById("disconnectBanner")?.classList.add("visible");
+            updateNavigateButtonState();
           });
       }
 
       let navStatusTopic = null;
       let navGoalSentAt = null;
 
+      function restoreNavigateButton() {
+        const navBtn = document.getElementById("navigateBtn");
+        const stopBtn = document.getElementById("stopNavBtn");
+        if (navBtn) {
+          navBtn.textContent = "Navigate";
+          navBtn.disabled = !(ros && ros.isConnected);
+        }
+        if (stopBtn) stopBtn.classList.remove("visible");
+      }
+
+      function updateStopButtonVisibility() {
+        const stopBtn = document.getElementById("stopNavBtn");
+        if (!stopBtn) return;
+        const isNavigating = navGoalSentAt && !hasReachedTarget && ros?.isConnected;
+        if (isNavigating) stopBtn.classList.add("visible");
+        else stopBtn.classList.remove("visible");
+      }
+
       function triggerArrival() {
         if (hasReachedTarget) return;
         hasReachedTarget = true;
+        releaseMotorTorque();
+        restoreNavigateButton();
         const targetName = selectedItemName || formatAisleDisplay(selectedAisleLabel) || "the selected item";
+        document.getElementById("arrivalCard").classList.remove("failure");
+        document.getElementById("arrivalDismissBtn").style.display = "none";
         targetBanner.textContent = `Arrived at ${targetName}`;
+        document.querySelector(".arrival-title").textContent = "Item Found";
         arrivalMessage.textContent = `You are next to ${targetName}`;
         arrivalOverlay.classList.add("visible");
         arrivalOverlay.setAttribute("aria-hidden", "false");
         clearRouteLine();
+        navGoalSentAt = null;
         setTimeout(exitMapView, EXIT_MAP_DELAY_MS);
       }
+
+      function triggerNavFailure(title, message) {
+        if (hasReachedTarget) return;
+        releaseMotorTorque();
+        restoreNavigateButton();
+        document.getElementById("arrivalCard").classList.add("failure");
+        document.getElementById("arrivalDismissBtn").style.display = "inline-block";
+        document.querySelector(".arrival-title").textContent = title;
+        arrivalMessage.textContent = message;
+        arrivalOverlay.classList.add("visible");
+        arrivalOverlay.setAttribute("aria-hidden", "false");
+        clearRouteLine();
+        navGoalSentAt = null;
+      }
+
+      function dismissFailureOverlay() {
+        arrivalOverlay.classList.remove("visible");
+        arrivalOverlay.setAttribute("aria-hidden", "true");
+      }
+
+      document.getElementById("arrivalDismissBtn").addEventListener("click", dismissFailureOverlay);
 
       function subscribeNavStatus() {
         if (navStatusTopic || !ros) return;
@@ -1091,39 +878,127 @@
           const statuses = msg.status_list || [];
           for (let i = 0; i < statuses.length; i++) {
             const s = statuses[i].status;
-            // STATUS_SUCCEEDED = 4, STATUS_ABORTED = 6, STATUS_CANCELED = 5
+            // STATUS_SUCCEEDED = 4, STATUS_CANCELED = 5, STATUS_ABORTED = 6
             if (s === 4) {
               triggerArrival();
+              return;
+            }
+            if (s === 5) {
+              triggerNavFailure(
+                "Navigation Canceled",
+                "Navigation was canceled. You can try again."
+              );
+              return;
+            }
+            if (s === 6) {
+              triggerNavFailure(
+                "Navigation Failed",
+                "Could not reach the destination. Path may be blocked. Please try again."
+              );
               return;
             }
           }
         });
       }
 
+      function releaseMotorTorque() {
+        if (!ros?.isConnected) return;
+        try {
+          const motorPowerService = new ROSLIB.Service({
+            ros,
+            name: "/motor_power",
+            serviceType: "std_srvs/srv/SetBool",
+          });
+          const request = new ROSLIB.ServiceRequest({ data: false });
+          motorPowerService.callService(request, () => {}, () => {});
+        } catch (e) {
+          console.warn("Release motor torque failed:", e);
+        }
+      }
+
+      function cancelNavigation() {
+        if (!ros?.isConnected || !navGoalSentAt || hasReachedTarget) return;
+        releaseMotorTorque();
+        try {
+          const cancelService = new ROSLIB.Service({
+            ros,
+            name: "/navigate_to_pose/_action/cancel_goal",
+            serviceType: "action_msgs/srv/CancelGoal",
+          });
+          const request = new ROSLIB.ServiceRequest({
+            goal_info: {
+              goal_id: { uuid: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] },
+              stamp: { sec: 0, nanosec: 0 },
+            },
+          });
+          cancelService.callService(request, () => {}, () => {});
+        } catch (e) {
+          console.warn("Cancel goal failed:", e);
+        }
+      }
+
+      document.getElementById("stopNavBtn").addEventListener("click", () => {
+        cancelNavigation();
+      });
+
+      window.addEventListener("beforeunload", () => {
+        if (navGoalSentAt && !hasReachedTarget && ros?.isConnected) {
+          cancelNavigation();
+        }
+      });
+
       document.getElementById("navigateBtn").addEventListener("click", () => {
         if (!ros || !ros.isConnected || selectedXRos == null || selectedYRos == null) return;
-        const goalTopic = new ROSLIB.Topic({
+        const navBtn = document.getElementById("navigateBtn");
+        navBtn.disabled = true;
+        navBtn.textContent = "Enabling motor...";
+        const motorPowerService = new ROSLIB.Service({
           ros,
-          name: "/goal_pose",
-          messageType: "geometry_msgs/PoseStamped",
+          name: "/motor_power",
+          serviceType: "std_srvs/srv/SetBool",
         });
-        const yaw = selectedYawRos;
-        const goalMsg = {
-          header: { frame_id: "map", stamp: { sec: 0, nanosec: 0 } },
-          pose: {
-            position: { x: selectedXRos, y: selectedYRos, z: 0.0 },
-            orientation: {
-              x: 0,
-              y: 0,
-              z: Math.sin(yaw / 2),
-              w: Math.cos(yaw / 2),
+        const request = new ROSLIB.ServiceRequest({ data: true });
+        motorPowerService.callService(request, () => {
+          navBtn.textContent = "Navigating...";
+          navBtn.disabled = true;
+          const goalTopic = new ROSLIB.Topic({
+            ros,
+            name: "/goal_pose",
+            messageType: "geometry_msgs/PoseStamped",
+          });
+          const yaw = selectedYawRos;
+          const nowMs = Date.now();
+          const goalMsg = {
+            header: {
+              frame_id: "map",
+              stamp: {
+                sec: Math.floor(nowMs / 1000),
+                nanosec: (nowMs % 1000) * 1000000,
+              },
             },
-          },
-        };
-        hasReachedTarget = false;
-        navGoalSentAt = Date.now();
-        goalTopic.publish(goalMsg);
-        subscribeNavStatus();
+            pose: {
+              position: { x: selectedXRos, y: selectedYRos, z: 0.0 },
+              orientation: {
+                x: 0,
+                y: 0,
+                z: Math.sin(yaw / 2),
+                w: Math.cos(yaw / 2),
+              },
+            },
+          };
+          hasReachedTarget = false;
+          navGoalSentAt = Date.now();
+          goalTopic.publish(goalMsg);
+          subscribeNavStatus();
+          updateStopButtonVisibility();
+        }, () => {
+          navBtn.disabled = false;
+          navBtn.textContent = "Navigate";
+          triggerNavFailure(
+            "Motor Power Failed",
+            "Could not enable motor. Please try again."
+          );
+        });
       });
 
       fetch(`${API_URL}/map_info`)
@@ -1135,7 +1010,8 @@
           loadSlamLayout();
         })
         .catch(() => {
-          loadLayout();
+          document.getElementById("mapUnavailableBanner")?.classList.add("visible");
+          showMapUnavailablePlaceholder();
           syncUser();
         });
     </script>
