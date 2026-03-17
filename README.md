@@ -94,7 +94,7 @@ When `lobby_final.pgm` and `lobby_final.yaml` (SLAM map) are in the project root
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
 ```
 
-2. **ros_config.json** in project root with `rosbridge_host` and `rosbridge_port` (e.g. `129.215.3.31`, `9090`)
+2. **ros_config.json** in project root with `rosbridge_host` and `rosbridge_port` (`10.0.0.1`, `9090`)
 
 ### Map Page Flow
 
