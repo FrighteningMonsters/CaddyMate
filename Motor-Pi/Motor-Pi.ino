@@ -11,8 +11,8 @@ int velocity = 0;
 void receiveCommand(int bytes) {
   String cmd = "";
   while (Wire.available()) cmd += (char)Wire.read();
-  if      (cmd == "UP")   velocity =  200;
-  else if (cmd == "DOWN") velocity = -200;
+  if      (cmd == "UP")   velocity =  256;
+  else if (cmd == "DOWN") velocity = -256;
   else if (cmd == "STOP") velocity =  0;
 }
 
