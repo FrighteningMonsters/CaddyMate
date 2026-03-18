@@ -8,11 +8,16 @@
     width: 100%;
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: space-between;
     gap: 20px;
 }
 
+.header .back-button {
+    order: 2;
+}
+
 .header h1 {
+    order: 1;
     margin: 0;
 }
 

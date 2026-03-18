@@ -27,14 +27,19 @@ body {
     border-radius: 16px;
     border: 1px solid #d2dbe8;
     box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
-    width: 800px;
-    height: 455px;
+    width: min(800px, calc(100vw - 24px));
+    height: min(455px, calc(100vh - 24px));
 }
 
 .motor-nav-button {
     position: absolute;
-    top: 16px;
-    left: 16px;
+    top: 12px;
+    right: 12px;
+    left: auto;
+    height: 40px;
+    min-height: 40px;
+    font-size: 14px;
+    padding: 0 14px;
     z-index: 1;
 }
 
@@ -143,9 +148,9 @@ button:active {
 
 @media (max-width: 900px) {
     .container {
-        width: min(100%, 700px);
-        height: auto;
-        min-height: 455px;
+        width: min(700px, calc(100vw - 24px));
+        height: min(455px, calc(100vh - 24px));
+        min-height: 0;
     }
 
     button {
@@ -155,5 +160,10 @@ button:active {
 
     .menu-button {
         min-height: 84px;
+    }
+
+    .motor-nav-button {
+        top: 10px;
+        right: 10px;
     }
 }
