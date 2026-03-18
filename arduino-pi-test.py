@@ -20,6 +20,6 @@ while True:
     if user_input == 'Q':
         break
     if user_input:
-        print(f"Sending '{user_input}' for 10 seconds...")
-        send_command_for_duration(user_input, 10)
+        print(f"Sending '{user_input}' for 2 seconds...")
+        send_command_for_duration(user_input, 2)
         print("Stopped.")
