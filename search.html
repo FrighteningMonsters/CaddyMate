@@ -249,7 +249,10 @@
             const grammar = buildSpeechGrammar(allItems);
             if (grammar) rec.grammars = grammar;
 
-            rec.onstart = () => setMicListening(true);
+            rec.onstart = () => {
+                console.log('[Voice] Recognition started');
+                setMicListening(true);
+            };
 
             rec.onresult = (event) => {
                 const input = document.getElementById('searchInput');
@@ -265,15 +268,22 @@
                     }
                 }
 
-                input.value = (final || interim).trim().replace(/[.,!?;:'"]+$/g, '').trim();
+                const text = (final || interim).trim().replace(/[.,!?;:'"]+$/g, '').trim();
+                console.log('[Voice] Result:', { isFinal: event.results[event.results.length - 1]?.isFinal, text });
+                input.value = text;
                 applySearch();
             };
 
-            rec.onend = () => setMicListening(false);
+            rec.onend = () => {
+                console.log('[Voice] Recognition ended');
+                setMicListening(false);
+                recognition = null;
+            };
 
             rec.onerror = (event) => {
-                console.error('Speech recognition error:', event.error);
+                console.error('[Voice] Speech recognition error:', event.error);
                 setMicListening(false);
+                recognition = null;
             };
 
             return rec;
@@ -281,18 +291,38 @@
 
         function toggleVoiceInput() {
             if (isListening) {
-                if (recognition) recognition.stop();
+                console.log('[Voice] Stopping recognition');
+                if (recognition) {
+                    recognition.abort();
+                    recognition = null;
+                }
+                setMicListening(false);
                 return;
             }
 
             const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRec) {
+                console.error('[Voice] Speech Recognition API not available');
                 alert('Voice recognition is not supported in this browser.');
                 return;
             }
 
+            console.log('[Voice] Starting recognition');
+            // Clean up any existing recognition first
+            if (recognition) {
+                recognition.abort();
+            }
+            
             recognition = createRecognition();
-            if (recognition) recognition.start();
+            if (recognition) {
+                try {
+                    recognition.start();
+                } catch (error) {
+                    console.error('[Voice] Failed to start recognition:', error);
+                    setMicListening(false);
+                    recognition = null;
+                }
+            }
         }
 
         document.getElementById('micToggle').addEventListener('click', toggleVoiceInput);
