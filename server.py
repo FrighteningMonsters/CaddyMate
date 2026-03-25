@@ -8,12 +8,7 @@ import threading
 import time
 from collections import deque
 from voice_to_text import VoiceToText
-
-try:
-    from smbus2 import SMBus, i2c_msg
-    HAS_I2C = True
-except ImportError:
-    HAS_I2C = False
+import serial
 
 try:
     from PIL import Image
@@ -30,8 +25,6 @@ SLAM_PGM_PATH = 'lobby_final.pgm'
 SLAM_YAML_PATH = 'lobby_final.yaml'
 SLAM_OUTPUT_PNG = 'lobby_map.png'
 ROS_CONFIG_PATH = 'ros_config.json'
-ARDUINO_I2C_ADDR = int(os.getenv('ARDUINO_I2C_ADDR', '0x08'), 16)
-ARDUINO_I2C_BUS = int(os.getenv('ARDUINO_I2C_BUS', '1'))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VOICE_MODEL_PATH = os.path.join(BASE_DIR, 'resources', 'vosk-model-small-en-us-0.15')
 VOICE_USE_GRAMMAR = os.getenv('VOICE_USE_GRAMMAR', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
@@ -56,54 +49,55 @@ _grid_cache = {
 
 
 class ArduinoMotorController:
-    def __init__(self, i2c_bus, i2c_addr):
-        self.i2c_bus = i2c_bus
-        self.i2c_addr = i2c_addr
-        self._bus = None
+    def __init__(self, port='/dev/ttyACM0', baudrate=115200):
+        self.port = port
+        self.baudrate = baudrate
+        self._ser = None
         self._lock = threading.Lock()
         self._last_direction = None
         self._last_mode = 'MANUAL'
 
     def _ensure_connection(self):
-        if not HAS_I2C:
-            raise RuntimeError('smbus2 is not installed. Run pip install -r requirements.txt')
-
-        if self._bus is None:
-            self._bus = SMBus(self.i2c_bus)
+        """Open serial port if not already open."""
+        if self._ser is None or not self._ser.is_open:
+            try:
+                self._ser = serial.Serial(self.port, self.baudrate, timeout=1)
+                time.sleep(2)  # Wait for Arduino R4 to reboot
+                print(f"Connected to Arduino on {self.port}")
+            except Exception as e:
+                self._ser = None
+                raise RuntimeError(f"Could not open serial port {self.port}: {e}")
 
     def send_command(self, cmd):
-        """Send command via I2C"""
-        try:
-            msg = i2c_msg.write(self.i2c_addr, bytes(cmd, 'utf-8'))
-            self._bus.i2c_rdwr(msg)
-        except Exception as e:
-            raise RuntimeError(f'Failed to send I2C command: {e}')
+        """Send a string command followed by a newline to the Arduino."""
+        with self._lock:
+            self._ensure_connection()
+            try:
+                # Add newline because Arduino uses readStringUntil('\n')
+                full_cmd = f"{cmd}\n"
+                self._ser.write(full_cmd.encode('utf-8'))
+                self._ser.flush() # Ensure it's sent immediately
+                print(f"Serial Sent: {cmd}")
+            except Exception as e:
+                self._ser = None # Reset connection on failure
+                raise RuntimeError(f"Failed to send Serial command: {e}")
 
     def send_direction(self, direction):
         direction_upper = direction.upper()
         if direction_upper not in {'UP', 'DOWN'}:
             raise ValueError('Direction must be either "up" or "down"')
-
-        with self._lock:
-            self._ensure_connection()
-            self.send_command(direction_upper)
-            self._last_direction = direction_upper
+        
+        self.send_command(direction_upper)
+        self._last_direction = direction_upper
 
     def stop(self):
-        with self._lock:
-            self._ensure_connection()
-            self.send_command('STOP')
-            self._last_direction = None
+        self.send_command('STOP')
+        self._last_direction = None
 
     def send_mode(self, mode_command):
-        mode_upper = mode_command.upper()
-        if mode_upper not in {'MANUAL', 'LOAD', 'UNLOAD'}:
-            raise ValueError('Mode must be one of "manual", "loading", or "unloading"')
-
-        with self._lock:
-            self._ensure_connection()
-            self.send_command(mode_upper)
-            self._last_mode = mode_upper
+        # mode_command is already uppercase from the Flask route mapping
+        self.send_command(mode_command)
+        self._last_mode = mode_command
 
     @property
     def last_direction(self):
@@ -114,7 +108,8 @@ class ArduinoMotorController:
         return self._last_mode
 
 
-motor_controller = ArduinoMotorController(ARDUINO_I2C_BUS, ARDUINO_I2C_ADDR)
+ARDUINO_SERIAL_PORT = os.getenv('ARDUINO_PORT', '/dev/ttyACM0')
+motor_controller = ArduinoMotorController(port=ARDUINO_SERIAL_PORT, baudrate=115200)
 voice_to_text = VoiceToText(
     model_path=VOICE_MODEL_PATH,
     db_path=DB_PATH,
@@ -408,8 +403,6 @@ def find_path(start, end, grid_resolution=1.0):
 
     return None
 
-    return None
-
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -620,11 +613,13 @@ def start_motor():
 
     try:
         motor_controller.send_direction(direction)
-        return jsonify({'status': 'running', 'direction': direction})
-    except ValueError as error:
-        return jsonify({'error': str(error)}), 400
+        return jsonify({
+            'status': 'running', 
+            'direction': direction,
+            'current_mode': motor_controller.last_mode
+        })
     except Exception as error:
-        return jsonify({'error': f'Failed to send command to Arduino: {error}'}), 500
+        return jsonify({'error': f'Communication error: {error}'}), 500
 
 
 @app.route('/api/motor/stop', methods=['POST'])
