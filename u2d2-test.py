@@ -7,7 +7,7 @@ ADDR_GOAL_VELOCITY  = 104
 ADDR_PROFILE_ACCEL  = 108
 ADDR_OPERATING_MODE = 11
 DXL_ID              = 1
-BAUDRATE            = 1000000
+BAUDRATE            = 57600
 PROTOCOL_VERSION    = 2.0
 DEVICENAME          = '/dev/ttyUSB0' # Change to USB1 if USB0 doesn't work
 
