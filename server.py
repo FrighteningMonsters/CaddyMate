@@ -9,6 +9,8 @@ import atexit
 from collections import deque
 from voice_to_text import VoiceToText
 from dynamixel_sdk import COMM_SUCCESS, PacketHandler, PortHandler
+import termios
+import time
 
 try:
     from PIL import Image
@@ -79,6 +81,10 @@ class DynamixelMotorController:
         self._port_handler = PortHandler(self.device_name)
         self._packet_handler = PacketHandler(self.PROTOCOL_VERSION)
 
+    def _flush(self):
+        if hasattr(self._port_handler, 'fd') and self._port_handler.fd is not None:
+            termios.tcflush(self._port_handler.fd, termios.TCIOFLUSH)
+
     def _ensure_connection(self):
         if self._closed:
             raise RuntimeError('Motor controller is closed.')
@@ -91,39 +97,54 @@ class DynamixelMotorController:
         if not self._port_handler.setBaudRate(self.baudrate):
             self._port_handler.closePort()
             raise RuntimeError(f'Could not set Dynamixel baudrate {self.baudrate}.')
-        self._write1(self.ADDR_TORQUE_ENABLE, 0)
+
+        # 1. Clear the buffer of any initial noise
+        self._flush()
+
+        # 2. Disable Torque first. 
+        # If the Pi crashed earlier, Torque might still be 1.
+        try:
+            self._write1(self.ADDR_TORQUE_ENABLE, 0)
+        except:
+            pass # Ignore if it was already off
+        
+        time.sleep(0.1) # Give the motor a moment to process
+
+        # 3. Set Operating Mode (Velocity)
         self._write1(self.ADDR_OPERATING_MODE, self.OPERATING_MODE_VELOCITY)
+        
+        # 4. Set Profile Accel
         self._write4(self.ADDR_PROFILE_ACCEL, self.profile_accel)
+        
+        # 5. Re-enable Torque
         self._write1(self.ADDR_TORQUE_ENABLE, 1)
+        
         self._connected = True
         print(f'Connected to Dynamixel on {self.device_name}')
 
     def _write1(self, address, value):
+        self._flush() # Clean before every write
         dxl_comm_result, dxl_error = self._packet_handler.write1ByteTxRx(
-            self._port_handler,
-            self.dxl_id,
-            address,
-            int(value),
+            self._port_handler, self.dxl_id, address, int(value)
         )
         if dxl_comm_result != COMM_SUCCESS:
             raise RuntimeError(self._packet_handler.getTxRxResult(dxl_comm_result))
         if dxl_error != 0:
-            raise RuntimeError(self._packet_handler.getRxPacketError(dxl_error))
+            # If we get "Address not available", it usually means Torque was ON
+            raise RuntimeError(f"Motor Error at Addr {address}: {self._packet_handler.getRxPacketError(dxl_error)}")
 
     def _write4(self, address, value):
+        self._flush() # Clean before every write
         write_value = int(value)
         if write_value < 0:
             write_value = (1 << 32) + write_value
         dxl_comm_result, dxl_error = self._packet_handler.write4ByteTxRx(
-            self._port_handler,
-            self.dxl_id,
-            address,
-            write_value,
+            self._port_handler, self.dxl_id, address, write_value
         )
         if dxl_comm_result != COMM_SUCCESS:
             raise RuntimeError(self._packet_handler.getTxRxResult(dxl_comm_result))
         if dxl_error != 0:
-            raise RuntimeError(self._packet_handler.getRxPacketError(dxl_error))
+            raise RuntimeError(f"Motor Error at Addr {address}: {self._packet_handler.getRxPacketError(dxl_error)}")
 
     def set_velocity(self, velocity):
         with self._lock:
