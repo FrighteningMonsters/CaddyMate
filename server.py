@@ -59,7 +59,7 @@ class DynamixelMotorController:
     def __init__(
         self,
         device_name,
-        baudrate=1000000,
+        baudrate=57600,
         dxl_id=1,
         speed_up=-256,
         speed_down=256,
