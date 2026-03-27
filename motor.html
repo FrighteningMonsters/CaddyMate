@@ -77,43 +77,66 @@
                 unloading: 'Unloading',
             };
 
+            const MAX_RETRIES = 3;
+            const RETRY_DELAY_MS = 100;
+
             function setStatus(message, isError) {
                 statusEl.textContent = message;
                 statusEl.classList.toggle('motor-status-error', !!isError);
+            }
+
+            async function retryWithExponentialBackoff(fn, maxRetries = MAX_RETRIES) {
+                let lastError;
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    try {
+                        return await fn();
+                    } catch (error) {
+                        lastError = error;
+                        if (attempt < maxRetries) {
+                            const delayMs = RETRY_DELAY_MS * attempt;
+                            await new Promise(function (resolve) { setTimeout(resolve, delayMs); });
+                        }
+                    }
+                }
+                throw lastError;
             }
 
             async function sendMotorCommand(action, direction) {
                 const endpoint = action === 'start' ? '/api/motor/start' : '/api/motor/stop';
                 const body = action === 'start' ? { direction: direction } : {};
 
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(body),
-                    keepalive: action === 'stop',
-                });
+                return retryWithExponentialBackoff(async function () {
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(body),
+                        keepalive: action === 'stop',
+                    });
 
-                if (!response.ok) {
-                    const payload = await response.json().catch(function () { return {}; });
-                    throw new Error(payload.error || 'Motor command failed');
-                }
+                    if (!response.ok) {
+                        const payload = await response.json().catch(function () { return {}; });
+                        throw new Error(payload.error || 'Motor command failed');
+                    }
+                });
             }
 
             async function sendMotorMode(mode) {
-                const response = await fetch('/api/motor/mode', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ mode: mode }),
-                });
+                return retryWithExponentialBackoff(async function () {
+                    const response = await fetch('/api/motor/mode', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ mode: mode }),
+                    });
 
-                if (!response.ok) {
-                    const payload = await response.json().catch(function () { return {}; });
-                    throw new Error(payload.error || 'Mode change failed');
-                }
+                    if (!response.ok) {
+                        const payload = await response.json().catch(function () { return {}; });
+                        throw new Error(payload.error || 'Mode change failed');
+                    }
+                });
             }
 
             function setActiveMode(mode) {
