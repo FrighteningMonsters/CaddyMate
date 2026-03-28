@@ -6,11 +6,18 @@ import json
 import heapq
 import threading
 import atexit
+import re
 from collections import deque
 from voice_to_text import VoiceToText
 from dynamixel_sdk import COMM_SUCCESS, PacketHandler, PortHandler
 import termios
 import time
+
+try:
+    import serial
+    HAS_SERIAL = True
+except ImportError:
+    HAS_SERIAL = False
 
 try:
     from PIL import Image
@@ -216,7 +223,296 @@ DYNAMIXEL_PORT = resolve_dynamixel_port()
 motor_controller = DynamixelMotorController(device_name=DYNAMIXEL_PORT)
 
 
+class MotorAutomationController:
+    SENSOR_COUNT = 4
+    NO_OBJECT_DISTANCE_CM = 44.0
+    IGNORE_ABOVE_CM = 45.0
+    LOOP_INTERVAL_SECONDS = 0.1
+    LOAD_CONFIRMATION_COUNT = 5
+    READ_MATCH_TOLERANCE_CM = 1.0
+
+    def __init__(self, motor_ctrl):
+        self._motor = motor_ctrl
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._last_auto_direction = None
+        self._state = {
+            'sensor_cm': [self.NO_OBJECT_DISTANCE_CM] * self.SENSOR_COUNT,
+            'last_read_cm': [None] * self.SENSOR_COUNT,
+            'same_read_count': [0] * self.SENSOR_COUNT,
+            'updated_at': None,
+        }
+
+    def _normalize_sensor_value(self, raw_value):
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            return self.NO_OBJECT_DISTANCE_CM
+
+        if value > self.IGNORE_ABOVE_CM:
+            return self.NO_OBJECT_DISTANCE_CM
+        if value < 0:
+            return self.NO_OBJECT_DISTANCE_CM
+        return value
+
+    def update_sensors(self, sensor_values):
+        updates_by_index = {}
+
+        if isinstance(sensor_values, dict):
+            for raw_index, value in sensor_values.items():
+                try:
+                    index = int(raw_index)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < self.SENSOR_COUNT and value is not None:
+                    updates_by_index[index] = self._normalize_sensor_value(value)
+        elif isinstance(sensor_values, list):
+            if len(sensor_values) > self.SENSOR_COUNT:
+                raise ValueError(f'Expected up to {self.SENSOR_COUNT} sensor readings.')
+            for index, value in enumerate(sensor_values):
+                if value is None:
+                    continue
+                updates_by_index[index] = self._normalize_sensor_value(value)
+        else:
+            raise ValueError('Sensor payload must be a list or object.')
+
+        if not updates_by_index:
+            raise ValueError('No valid sensor readings were provided.')
+
+        with self._lock:
+            next_values = list(self._state['sensor_cm'])
+            next_last_read = list(self._state['last_read_cm'])
+            next_same_count = list(self._state['same_read_count'])
+
+            for index, value in updates_by_index.items():
+                last_value = next_last_read[index]
+                if last_value is not None and abs(value - last_value) <= self.READ_MATCH_TOLERANCE_CM:
+                    next_same_count[index] += 1
+                else:
+                    next_same_count[index] = 1
+
+                next_values[index] = value
+                next_last_read[index] = value
+
+            self._state['sensor_cm'] = next_values
+            self._state['last_read_cm'] = next_last_read
+            self._state['same_read_count'] = next_same_count
+            self._state['updated_at'] = time.time()
+
+    def _sensor_detected(self, sensor_values):
+        # Any sensor reading below the no-object baseline means an object is present.
+        return any(value < self.NO_OBJECT_DISTANCE_CM for value in sensor_values)
+
+    def _sensor_confirmed_for_load(self, sensor_values, same_read_count):
+        for index, value in enumerate(sensor_values):
+            if value < self.NO_OBJECT_DISTANCE_CM and same_read_count[index] >= self.LOAD_CONFIRMATION_COUNT:
+                return True
+        return False
+
+    def _compute_direction(self, mode_command, sensor_values, same_read_count):
+        detected = self._sensor_detected(sensor_values)
+        confirmed_for_load = self._sensor_confirmed_for_load(sensor_values, same_read_count)
+
+        if mode_command == 'LOAD':
+            return 'DOWN' if confirmed_for_load else None
+        if mode_command == 'UNLOAD':
+            return 'UP' if not detected else None
+        return None
+
+    def _run_loop(self):
+        while not self._stop_event.is_set():
+            with self._lock:
+                sensor_values = list(self._state['sensor_cm'])
+                same_read_count = list(self._state['same_read_count'])
+
+            mode_command = self._motor.last_mode
+            desired_direction = self._compute_direction(mode_command, sensor_values, same_read_count)
+            should_force_stop = (
+                mode_command in {'LOAD', 'UNLOAD'}
+                and desired_direction is None
+                and self._motor.last_direction is not None
+            )
+
+            if desired_direction != self._last_auto_direction or should_force_stop:
+                try:
+                    if desired_direction is None:
+                        self._motor.stop()
+                    else:
+                        self._motor.send_direction(desired_direction)
+                except Exception as error:
+                    print(f'Auto motor control error: {error}')
+                finally:
+                    self._last_auto_direction = desired_direction
+
+            self._stop_event.wait(self.LOOP_INTERVAL_SECONDS)
+
+    def start(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def get_state(self):
+        with self._lock:
+            return {
+                'sensor_cm': list(self._state['sensor_cm']),
+                'same_read_count': list(self._state['same_read_count']),
+                'updated_at': self._state['updated_at'],
+                'mode': self._motor.last_mode,
+                'auto_direction': self._last_auto_direction,
+            }
+
+
+motor_automation = MotorAutomationController(motor_controller)
+motor_automation.start()
+
+
+class ArduinoUltrasonicSerialReader:
+    SENSOR_COUNT = 4
+    DEFAULT_BAUDRATE = 115200
+    SENSOR_PATTERN = re.compile(r'S(\d+)\s*:\s*(-?\d+(?:\.\d+)?)')
+
+    def __init__(self, motor_auto_ctrl, port=None, baudrate=None):
+        self._motor_auto_ctrl = motor_auto_ctrl
+        self._port = port or self._resolve_default_port()
+        self._baudrate = int(baudrate or self.DEFAULT_BAUDRATE)
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._serial_conn = None
+        self._state = {
+            'enabled': HAS_SERIAL,
+            'port': self._port,
+            'baudrate': self._baudrate,
+            'connected': False,
+            'last_line': None,
+            'last_update_at': None,
+            'parse_errors': 0,
+            'last_error': None,
+        }
+
+    def _resolve_default_port(self):
+        configured_port = os.getenv('ULTRASONIC_SERIAL_PORT', '').strip()
+        if configured_port:
+            return configured_port
+
+        for candidate in ('/dev/ttyACM0', '/dev/ttyACM1', '/dev/serial0'):
+            if os.path.exists(candidate):
+                return candidate
+
+        return 'COM14'
+
+    def _set_state(self, **updates):
+        with self._lock:
+            self._state.update(updates)
+
+    def _parse_sensor_line(self, line):
+        matches = self.SENSOR_PATTERN.findall(line)
+        if not matches:
+            return None
+
+        by_index = {}
+        for raw_index, raw_value in matches:
+            index = int(raw_index)
+            if index < 0 or index >= self.SENSOR_COUNT:
+                continue
+            by_index[index] = float(raw_value)
+
+        if not by_index:
+            return None
+
+        return by_index
+
+    def _open_serial(self):
+        return serial.Serial(self._port, self._baudrate, timeout=1)
+
+    def _close_serial(self):
+        if self._serial_conn is None:
+            return
+        try:
+            self._serial_conn.close()
+        except Exception:
+            pass
+        finally:
+            self._serial_conn = None
+
+    def _run_loop(self):
+        if not HAS_SERIAL:
+            self._set_state(last_error='pyserial is not installed.')
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                if self._serial_conn is None:
+                    self._serial_conn = self._open_serial()
+                    self._set_state(connected=True, last_error=None)
+
+                raw_line = self._serial_conn.readline()
+                if not raw_line:
+                    continue
+
+                line = raw_line.decode('utf-8', errors='replace').strip()
+                if not line:
+                    continue
+
+                parsed_values = self._parse_sensor_line(line)
+                if parsed_values is None:
+                    with self._lock:
+                        self._state['parse_errors'] += 1
+                        self._state['last_line'] = line
+                    continue
+
+                self._motor_auto_ctrl.update_sensors(parsed_values)
+                self._set_state(last_line=line, last_update_at=time.time())
+
+            except Exception as error:
+                self._set_state(connected=False, last_error=str(error))
+                self._close_serial()
+                self._stop_event.wait(1.0)
+
+        self._set_state(connected=False)
+        self._close_serial()
+
+    def start(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._close_serial()
+
+    def get_state(self):
+        with self._lock:
+            return dict(self._state)
+
+
+ultrasonic_serial_reader = ArduinoUltrasonicSerialReader(motor_automation)
+ultrasonic_serial_reader.start()
+
+
 def shutdown_motor_controller():
+    try:
+        ultrasonic_serial_reader.stop()
+    except Exception as error:
+        print(f'Failed to stop ultrasonic serial reader cleanly: {error}')
+
+    try:
+        motor_automation.stop()
+    except Exception as error:
+        print(f'Failed to stop motor automation cleanly: {error}')
+
     try:
         motor_controller.close()
     except Exception as error:
@@ -767,6 +1063,43 @@ def set_motor_mode():
         return jsonify({'error': str(error)}), 400
     except Exception as error:
         return jsonify({'error': f'Failed to set motor mode: {error}'}), 500
+
+
+@app.route('/api/motor/sensors', methods=['POST'])
+def update_motor_sensors():
+    payload = request.get_json(silent=True) or {}
+    sensor_values = payload.get('sensor_cm')
+
+    # Accept either an ordered list in sensor_cm or indexed keys like sensor_0..sensor_3 / sensor_1..sensor_4.
+    if sensor_values is None:
+        sensor_values = {}
+        for one_based in range(1, MotorAutomationController.SENSOR_COUNT + 1):
+            key = f'sensor_{one_based}'
+            if key in payload:
+                sensor_values[one_based - 1] = payload.get(key)
+
+        for zero_based in range(MotorAutomationController.SENSOR_COUNT):
+            key = f'sensor_{zero_based}'
+            if key in payload:
+                sensor_values[zero_based] = payload.get(key)
+
+    try:
+        motor_automation.update_sensors(sensor_values)
+        return jsonify({'status': 'ok', 'state': motor_automation.get_state()})
+    except ValueError as error:
+        return jsonify({'error': str(error)}), 400
+    except Exception as error:
+        return jsonify({'error': f'Failed to update sensor values: {error}'}), 500
+
+
+@app.route('/api/motor/sensors')
+def get_motor_sensors_state():
+    return jsonify(motor_automation.get_state())
+
+
+@app.route('/api/motor/ultrasonic')
+def get_ultrasonic_reader_state():
+    return jsonify(ultrasonic_serial_reader.get_state())
 
 
 if __name__ == '__main__':
