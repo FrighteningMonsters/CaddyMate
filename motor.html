@@ -65,6 +65,7 @@
     <script>
         (function () {
             const statusEl = document.getElementById('motor-status');
+            const modeStatusEl = document.getElementById('mode-status');
             const modeButtons = document.querySelectorAll('.mode-button');
             const directionButtons = document.querySelectorAll('.direction-button');
             let activeDirection = null;
@@ -146,6 +147,9 @@
             }
 
             function setModeStatus(mode) {
+                if (!modeStatusEl) {
+                    return;
+                }
                 modeStatusEl.textContent = 'Mode: ' + (MODE_LABELS[mode] || mode);
             }
 
@@ -156,13 +160,15 @@
 
                 const previousMode = activeMode;
                 modeChangeInFlight = true;
+                activeMode = mode;
                 setActiveMode(mode);
+                setModeStatus(mode);
 
                 try {
                     await sendMotorMode(mode);
-                    activeMode = mode;
                     setModeStatus(mode);
                 } catch (error) {
+                    activeMode = previousMode;
                     setActiveMode(previousMode);
                     setModeStatus(previousMode);
                     setStatus(error.message, true);
