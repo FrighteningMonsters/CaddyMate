@@ -84,6 +84,7 @@ class DynamixelMotorController:
         profile_accel=30,
         top_to_bottom_ticks=12000,
         down_increases_position=True,
+        swap_direction_commands=False,
     ):
         self.device_name = device_name
         self.baudrate = baudrate
@@ -93,6 +94,7 @@ class DynamixelMotorController:
         self.profile_accel = profile_accel
         self.top_to_bottom_ticks = max(0, int(top_to_bottom_ticks))
         self.down_increases_position = bool(down_increases_position)
+        self.swap_direction_commands = bool(swap_direction_commands)
         self._lock = threading.Lock()
         self._connected = False
         self._closed = False
@@ -171,6 +173,10 @@ class DynamixelMotorController:
         print(
             'Direction mapping: '
             f"DOWN {'increases' if self.down_increases_position else 'decreases'} position"
+        )
+        print(
+            'Command mapping: '
+            f"swap_directions={self.swap_direction_commands}"
         )
 
     def _write1(self, address, value):
@@ -251,6 +257,11 @@ class DynamixelMotorController:
 
         return False
 
+    def _map_requested_direction(self, direction):
+        if not self.swap_direction_commands:
+            return direction
+        return 'DOWN' if direction == 'UP' else 'UP'
+
     def _stop_without_lock(self):
         self._write4(self.ADDR_GOAL_VELOCITY, 0)
         self._last_direction = None
@@ -293,19 +304,22 @@ class DynamixelMotorController:
         if direction_upper not in {'UP', 'DOWN'}:
             raise ValueError('Direction must be either "up" or "down"')
 
+        effective_direction = self._map_requested_direction(direction_upper)
+
         with self._lock:
             self._ensure_connection()
             current_position = self._read_present_position()
-            if self._at_soft_limit_for_direction(direction_upper, current_position):
+            if self._at_soft_limit_for_direction(effective_direction, current_position):
                 self._stop_without_lock()
                 raise RuntimeError(
                     f'Software limit reached for {direction_upper} '
+                    f'(effective={effective_direction}, '
                     f'(current={current_position}, min={self._soft_min_limit}, max={self._soft_max_limit})'
                 )
 
-            velocity = self.speed_up if direction_upper == 'UP' else self.speed_down
+            velocity = self.speed_up if effective_direction == 'UP' else self.speed_down
             self._write4(self.ADDR_GOAL_VELOCITY, velocity)
-            self._last_direction = direction_upper
+            self._last_direction = effective_direction
 
     def stop(self):
         with self._lock:
@@ -364,6 +378,7 @@ class DynamixelMotorController:
             'software_limit_stop_count': self._software_limit_stop_count,
             'top_to_bottom_ticks': self.top_to_bottom_ticks,
             'down_increases_position': self.down_increases_position,
+            'swap_direction_commands': self.swap_direction_commands,
         }
 
     def read_position_state(self):
@@ -406,12 +421,14 @@ def resolve_dynamixel_port():
 DYNAMIXEL_PORT = resolve_dynamixel_port()
 MOTOR_TOP_TO_BOTTOM_TICKS = int(os.getenv('MOTOR_TOP_TO_BOTTOM_TICKS', '12000'))
 MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+MOTOR_SWAP_DIRECTION_COMMANDS = os.getenv('MOTOR_SWAP_DIRECTION_COMMANDS', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_PRINT = os.getenv('MOTOR_OFFSET_DEBUG_PRINT', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS = float(os.getenv('MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS', '0.5'))
 motor_controller = DynamixelMotorController(
     device_name=DYNAMIXEL_PORT,
     top_to_bottom_ticks=MOTOR_TOP_TO_BOTTOM_TICKS,
     down_increases_position=MOTOR_DOWN_INCREASES_POSITION,
+    swap_direction_commands=MOTOR_SWAP_DIRECTION_COMMANDS,
 )
 
 
