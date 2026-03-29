@@ -71,6 +71,7 @@ class DynamixelMotorController:
     ADDR_MAX_POSITION_LIMIT = 48
     ADDR_MIN_POSITION_LIMIT = 52
     ADDR_PRESENT_POSITION = 132
+    SINGLE_TURN_TICKS = 4096
     OPERATING_MODE_VELOCITY = 1
     PROTOCOL_VERSION = 2.0
 
@@ -84,6 +85,8 @@ class DynamixelMotorController:
         profile_accel=30,
         top_to_bottom_ticks=12000,
         down_increases_position=True,
+        hw_position_limit_min=0,
+        hw_position_limit_max=4095,
     ):
         self.device_name = device_name
         self.baudrate = baudrate
@@ -93,6 +96,13 @@ class DynamixelMotorController:
         self.profile_accel = profile_accel
         self.top_to_bottom_ticks = max(0, int(top_to_bottom_ticks))
         self.down_increases_position = bool(down_increases_position)
+        self.hw_position_limit_min = int(hw_position_limit_min)
+        self.hw_position_limit_max = int(hw_position_limit_max)
+        if self.hw_position_limit_min > self.hw_position_limit_max:
+            self.hw_position_limit_min, self.hw_position_limit_max = (
+                self.hw_position_limit_max,
+                self.hw_position_limit_min,
+            )
         self._lock = threading.Lock()
         self._connected = False
         self._closed = False
@@ -208,15 +218,32 @@ class DynamixelMotorController:
         raw_value = self._read4(self.ADDR_PRESENT_POSITION)
         return self._to_signed_32(raw_value)
 
+    def _clamp_hw_limit(self, value):
+        return max(self.hw_position_limit_min, min(self.hw_position_limit_max, int(value)))
+
     def _configure_position_limits_from_top(self):
-        top_position = self._read_present_position()
+        raw_top_value = self._read4(self.ADDR_PRESENT_POSITION)
+        top_position = self._to_signed_32(raw_top_value)
+        top_single_turn = raw_top_value % self.SINGLE_TURN_TICKS
+
         bottom_offset = self.top_to_bottom_ticks
         if not self.down_increases_position:
             bottom_offset = -bottom_offset
-        bottom_position = top_position + bottom_offset
 
-        min_limit = min(top_position, bottom_position)
-        max_limit = max(top_position, bottom_position)
+        # Position limit registers (48/52) use bounded position space.
+        bottom_single_turn = top_single_turn + bottom_offset
+
+        min_limit = self._clamp_hw_limit(min(top_single_turn, bottom_single_turn))
+        max_limit = self._clamp_hw_limit(max(top_single_turn, bottom_single_turn))
+
+        if min_limit >= max_limit:
+            if min_limit == self.hw_position_limit_max:
+                min_limit = max(self.hw_position_limit_min, self.hw_position_limit_max - 1)
+                max_limit = self.hw_position_limit_max
+            else:
+                max_limit = min(self.hw_position_limit_max, min_limit + 1)
+
+        bottom_position = top_position + bottom_offset
 
         self._write4(self.ADDR_MIN_POSITION_LIMIT, min_limit)
         self._write4(self.ADDR_MAX_POSITION_LIMIT, max_limit)
@@ -321,12 +348,16 @@ def resolve_dynamixel_port():
 DYNAMIXEL_PORT = resolve_dynamixel_port()
 MOTOR_TOP_TO_BOTTOM_TICKS = int(os.getenv('MOTOR_TOP_TO_BOTTOM_TICKS', '12000'))
 MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+MOTOR_HW_MIN_POSITION_LIMIT = int(os.getenv('MOTOR_HW_MIN_POSITION_LIMIT', '0'))
+MOTOR_HW_MAX_POSITION_LIMIT = int(os.getenv('MOTOR_HW_MAX_POSITION_LIMIT', '4095'))
 MOTOR_OFFSET_DEBUG_PRINT = os.getenv('MOTOR_OFFSET_DEBUG_PRINT', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS = float(os.getenv('MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS', '0.5'))
 motor_controller = DynamixelMotorController(
     device_name=DYNAMIXEL_PORT,
     top_to_bottom_ticks=MOTOR_TOP_TO_BOTTOM_TICKS,
     down_increases_position=MOTOR_DOWN_INCREASES_POSITION,
+    hw_position_limit_min=MOTOR_HW_MIN_POSITION_LIMIT,
+    hw_position_limit_max=MOTOR_HW_MAX_POSITION_LIMIT,
 )
 
 
