@@ -168,6 +168,10 @@ class DynamixelMotorController:
             f'-> bottom={self._bottom_position} '
             f'(soft_min={self._soft_min_limit}, soft_max={self._soft_max_limit})'
         )
+        print(
+            'Direction mapping: '
+            f"DOWN {'increases' if self.down_increases_position else 'decreases'} position"
+        )
 
     def _write1(self, address, value):
         self._flush() # Clean before every write
@@ -214,25 +218,18 @@ class DynamixelMotorController:
         return self._to_signed_32(raw_value)
 
     def _configure_software_limits_from_top(self):
-        raw_top_value = self._read4(self.ADDR_PRESENT_POSITION)
-        top_position_raw = self._to_signed_32(raw_top_value)
-        top_single_turn = raw_top_value % self.SINGLE_TURN_TICKS
+        top_position_raw = self._read_present_position()
+        top_single_turn = top_position_raw % self.SINGLE_TURN_TICKS
 
         bottom_offset = self.top_to_bottom_ticks
         bottom_sign = 1 if self.down_increases_position else -1
 
-        # Software limits use bounded single-turn position space.
-        bottom_single_turn = top_single_turn + (bottom_sign * bottom_offset)
+        # Software limits in velocity mode should use continuous raw position.
+        bottom_position = top_position_raw + (bottom_sign * bottom_offset)
+        min_limit = min(top_position_raw, bottom_position)
+        max_limit = max(top_position_raw, bottom_position)
 
-        min_limit = max(0, min(self.SINGLE_TURN_TICKS - 1, min(top_single_turn, bottom_single_turn)))
-        max_limit = max(0, min(self.SINGLE_TURN_TICKS - 1, max(top_single_turn, bottom_single_turn)))
-
-        if min_limit >= max_limit:
-            max_limit = min(self.SINGLE_TURN_TICKS - 1, min_limit + 1)
-
-        bottom_position = top_single_turn + (bottom_sign * bottom_offset)
-
-        self._top_position = top_single_turn
+        self._top_position = top_position_raw
         self._top_position_raw = top_position_raw
         self._bottom_position = bottom_position
         self._soft_min_limit = min_limit
@@ -241,10 +238,17 @@ class DynamixelMotorController:
     def _at_soft_limit_for_direction(self, direction, current_position):
         if self._soft_min_limit is None or self._soft_max_limit is None:
             return False
+
         if direction == 'UP':
+            if self.down_increases_position:
+                return current_position <= self._soft_min_limit
             return current_position >= self._soft_max_limit
+
         if direction == 'DOWN':
+            if self.down_increases_position:
+                return current_position >= self._soft_max_limit
             return current_position <= self._soft_min_limit
+
         return False
 
     def _stop_without_lock(self):
@@ -258,8 +262,7 @@ class DynamixelMotorController:
                     if self._closed or not self._connected or self._last_direction is None:
                         pass
                     else:
-                        current_raw_value = self._read4(self.ADDR_PRESENT_POSITION)
-                        current_position = current_raw_value % self.SINGLE_TURN_TICKS
+                        current_position = self._read_present_position()
                         if self._at_soft_limit_for_direction(self._last_direction, current_position):
                             self._stop_without_lock()
                             self._software_limit_stop_count += 1
@@ -292,8 +295,7 @@ class DynamixelMotorController:
 
         with self._lock:
             self._ensure_connection()
-            current_raw_value = self._read4(self.ADDR_PRESENT_POSITION)
-            current_position = current_raw_value % self.SINGLE_TURN_TICKS
+            current_position = self._read_present_position()
             if self._at_soft_limit_for_direction(direction_upper, current_position):
                 self._stop_without_lock()
                 raise RuntimeError(
@@ -367,9 +369,9 @@ class DynamixelMotorController:
     def read_position_state(self):
         with self._lock:
             self._ensure_connection()
-            current_raw_value = self._read4(self.ADDR_PRESENT_POSITION)
-            current_position = current_raw_value % self.SINGLE_TURN_TICKS
-            current_position_raw = self._to_signed_32(current_raw_value)
+            current_position_raw = self._read_present_position()
+            current_position = current_position_raw
+            current_position_single_turn = current_position_raw % self.SINGLE_TURN_TICKS
             top_position = self._top_position
 
         offset_from_top = None
@@ -379,6 +381,7 @@ class DynamixelMotorController:
         return {
             'current_position': current_position,
             'current_position_raw': current_position_raw,
+            'current_position_single_turn': current_position_single_turn,
             'top_position': top_position,
             'top_position_raw': self._top_position_raw,
             'offset_from_top': offset_from_top,
@@ -402,7 +405,7 @@ def resolve_dynamixel_port():
 
 DYNAMIXEL_PORT = resolve_dynamixel_port()
 MOTOR_TOP_TO_BOTTOM_TICKS = int(os.getenv('MOTOR_TOP_TO_BOTTOM_TICKS', '12000'))
-MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
+MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_PRINT = os.getenv('MOTOR_OFFSET_DEBUG_PRINT', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS = float(os.getenv('MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS', '0.5'))
 motor_controller = DynamixelMotorController(
