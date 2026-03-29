@@ -86,6 +86,25 @@
                 statusEl.classList.toggle('motor-status-error', !!isError);
             }
 
+            function formatMotorError(message, requestedDirection) {
+                if (!message) {
+                    return 'Motor command failed';
+                }
+
+                const softwareLimitMatch = message.match(/Software limit reached for\s+(UP|DOWN)/i);
+                if (softwareLimitMatch) {
+                    const requested = (requestedDirection || '').toLowerCase();
+                    const requestedLabel = requested ? requested : softwareLimitMatch[1].toLowerCase();
+                    return 'Cannot move ' + requestedLabel + ': platform is already at its travel limit.';
+                }
+
+                if (message.toLowerCase().includes('communication error')) {
+                    return 'Motor controller communication issue. Please try again.';
+                }
+
+                return message;
+            }
+
             async function retryWithExponentialBackoff(fn, maxRetries = MAX_RETRIES) {
                 let lastError;
                 for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -195,7 +214,7 @@
                 } catch (error) {
                     activeDirection = null;
                     document.querySelector('.direction-button[data-direction="' + direction + '"]').classList.remove('is-active');
-                    setStatus(error.message, true);
+                    setStatus(formatMotorError(error.message, direction), true);
                 }
             }
 
@@ -211,7 +230,7 @@
                     await sendMotorCommand('stop');
                     setStatus('Motor idle', false);
                 } catch (error) {
-                    setStatus(error.message, true);
+                    setStatus(formatMotorError(error.message), true);
                 }
             }
 
