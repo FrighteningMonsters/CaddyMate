@@ -112,6 +112,8 @@ class DynamixelMotorController:
         self._bottom_position = None
         self._configured_min_limit = None
         self._configured_max_limit = None
+        self._actual_min_limit = None
+        self._actual_max_limit = None
         self._port_handler = PortHandler(self.device_name)
         self._packet_handler = PacketHandler(self.PROTOCOL_VERSION)
 
@@ -173,6 +175,10 @@ class DynamixelMotorController:
             f'-> bottom={self._bottom_position} '
             f'(min={self._configured_min_limit}, max={self._configured_max_limit})'
         )
+        print(
+            f'Position limits readback from table '
+            f'(addr52={self._actual_min_limit}, addr48={self._actual_max_limit})'
+        )
 
     def _write1(self, address, value):
         self._flush() # Clean before every write
@@ -221,6 +227,11 @@ class DynamixelMotorController:
     def _clamp_hw_limit(self, value):
         return max(self.hw_position_limit_min, min(self.hw_position_limit_max, int(value)))
 
+    def _read_position_limits_from_table(self):
+        min_limit = self._read4(self.ADDR_MIN_POSITION_LIMIT)
+        max_limit = self._read4(self.ADDR_MAX_POSITION_LIMIT)
+        return min_limit, max_limit
+
     def _configure_position_limits_from_top(self):
         raw_top_value = self._read4(self.ADDR_PRESENT_POSITION)
         top_position = self._to_signed_32(raw_top_value)
@@ -248,10 +259,14 @@ class DynamixelMotorController:
         self._write4(self.ADDR_MIN_POSITION_LIMIT, min_limit)
         self._write4(self.ADDR_MAX_POSITION_LIMIT, max_limit)
 
+        actual_min_limit, actual_max_limit = self._read_position_limits_from_table()
+
         self._top_position = top_position
         self._bottom_position = bottom_position
         self._configured_min_limit = min_limit
         self._configured_max_limit = max_limit
+        self._actual_min_limit = actual_min_limit
+        self._actual_max_limit = actual_max_limit
 
     def set_velocity(self, velocity):
         with self._lock:
@@ -312,6 +327,8 @@ class DynamixelMotorController:
             'bottom_position': self._bottom_position,
             'min_position_limit': self._configured_min_limit,
             'max_position_limit': self._configured_max_limit,
+            'actual_min_position_limit': self._actual_min_limit,
+            'actual_max_position_limit': self._actual_max_limit,
             'top_to_bottom_ticks': self.top_to_bottom_ticks,
             'down_increases_position': self.down_increases_position,
         }
@@ -321,6 +338,9 @@ class DynamixelMotorController:
             self._ensure_connection()
             current_position = self._read_present_position()
             top_position = self._top_position
+            actual_min_limit, actual_max_limit = self._read_position_limits_from_table()
+            self._actual_min_limit = actual_min_limit
+            self._actual_max_limit = actual_max_limit
 
         offset_from_top = None
         if top_position is not None:
@@ -330,6 +350,8 @@ class DynamixelMotorController:
             'current_position': current_position,
             'top_position': top_position,
             'offset_from_top': offset_from_top,
+            'actual_min_position_limit': actual_min_limit,
+            'actual_max_position_limit': actual_max_limit,
         }
 
 
@@ -376,7 +398,9 @@ class MotorOffsetCalibrationPrinter:
                     '[Motor Cal] '
                     f"current={state['current_position']} "
                     f"top={state['top_position']} "
-                    f"offset_from_top={state['offset_from_top']}"
+                    f"offset_from_top={state['offset_from_top']} "
+                    f"addr52_min={state['actual_min_position_limit']} "
+                    f"addr48_max={state['actual_max_position_limit']}"
                 )
             except Exception as error:
                 print(f'[Motor Cal] read failed: {error}')
