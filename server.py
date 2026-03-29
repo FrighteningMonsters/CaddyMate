@@ -68,12 +68,11 @@ class DynamixelMotorController:
     ADDR_GOAL_VELOCITY = 104
     ADDR_PROFILE_ACCEL = 108
     ADDR_OPERATING_MODE = 11
-    ADDR_MAX_POSITION_LIMIT = 48
-    ADDR_MIN_POSITION_LIMIT = 52
     ADDR_PRESENT_POSITION = 132
     SINGLE_TURN_TICKS = 4096
     OPERATING_MODE_VELOCITY = 1
     PROTOCOL_VERSION = 2.0
+    SOFTWARE_LIMIT_LOOP_SECONDS = 0.05
 
     def __init__(
         self,
@@ -85,8 +84,6 @@ class DynamixelMotorController:
         profile_accel=30,
         top_to_bottom_ticks=12000,
         down_increases_position=True,
-        hw_position_limit_min=0,
-        hw_position_limit_max=4095,
     ):
         self.device_name = device_name
         self.baudrate = baudrate
@@ -96,24 +93,19 @@ class DynamixelMotorController:
         self.profile_accel = profile_accel
         self.top_to_bottom_ticks = max(0, int(top_to_bottom_ticks))
         self.down_increases_position = bool(down_increases_position)
-        self.hw_position_limit_min = int(hw_position_limit_min)
-        self.hw_position_limit_max = int(hw_position_limit_max)
-        if self.hw_position_limit_min > self.hw_position_limit_max:
-            self.hw_position_limit_min, self.hw_position_limit_max = (
-                self.hw_position_limit_max,
-                self.hw_position_limit_min,
-            )
         self._lock = threading.Lock()
         self._connected = False
         self._closed = False
         self._last_direction = None
         self._last_mode = 'MANUAL'
         self._top_position = None
+        self._top_position_raw = None
         self._bottom_position = None
-        self._configured_min_limit = None
-        self._configured_max_limit = None
-        self._actual_min_limit = None
-        self._actual_max_limit = None
+        self._soft_min_limit = None
+        self._soft_max_limit = None
+        self._software_limit_stop_count = 0
+        self._limit_stop_event = threading.Event()
+        self._limit_thread = None
         self._port_handler = PortHandler(self.device_name)
         self._packet_handler = PacketHandler(self.PROTOCOL_VERSION)
 
@@ -156,9 +148,6 @@ class DynamixelMotorController:
         
         time.sleep(0.1) # Give the motor a moment to process
 
-        # Capture top at startup and set hardware min/max limits.
-        self._configure_position_limits_from_top()
-
         # 3. Set Operating Mode (Velocity)
         self._write1(self.ADDR_OPERATING_MODE, self.OPERATING_MODE_VELOCITY)
         
@@ -167,17 +156,17 @@ class DynamixelMotorController:
         
         # 5. Re-enable Torque
         self._write1(self.ADDR_TORQUE_ENABLE, 1)
+
+        # Capture top at startup and set software-only limits for velocity mode.
+        self._configure_software_limits_from_top()
+        self._start_limit_watcher()
         
         self._connected = True
         print(f'Connected to Dynamixel on {self.device_name}')
         print(
-            f'Position limits configured from top={self._top_position} '
+            f'Software limits configured from top={self._top_position} '
             f'-> bottom={self._bottom_position} '
-            f'(min={self._configured_min_limit}, max={self._configured_max_limit})'
-        )
-        print(
-            f'Position limits readback from table '
-            f'(addr52={self._actual_min_limit}, addr48={self._actual_max_limit})'
+            f'(soft_min={self._soft_min_limit}, soft_max={self._soft_max_limit})'
         )
 
     def _write1(self, address, value):
@@ -224,49 +213,72 @@ class DynamixelMotorController:
         raw_value = self._read4(self.ADDR_PRESENT_POSITION)
         return self._to_signed_32(raw_value)
 
-    def _clamp_hw_limit(self, value):
-        return max(self.hw_position_limit_min, min(self.hw_position_limit_max, int(value)))
-
-    def _read_position_limits_from_table(self):
-        min_limit = self._read4(self.ADDR_MIN_POSITION_LIMIT)
-        max_limit = self._read4(self.ADDR_MAX_POSITION_LIMIT)
-        return min_limit, max_limit
-
-    def _configure_position_limits_from_top(self):
+    def _configure_software_limits_from_top(self):
         raw_top_value = self._read4(self.ADDR_PRESENT_POSITION)
-        top_position = self._to_signed_32(raw_top_value)
+        top_position_raw = self._to_signed_32(raw_top_value)
         top_single_turn = raw_top_value % self.SINGLE_TURN_TICKS
 
         bottom_offset = self.top_to_bottom_ticks
-        if not self.down_increases_position:
-            bottom_offset = -bottom_offset
+        bottom_sign = 1 if self.down_increases_position else -1
 
-        # Position limit registers (48/52) use bounded position space.
-        bottom_single_turn = top_single_turn + bottom_offset
+        # Software limits use bounded single-turn position space.
+        bottom_single_turn = top_single_turn + (bottom_sign * bottom_offset)
 
-        min_limit = self._clamp_hw_limit(min(top_single_turn, bottom_single_turn))
-        max_limit = self._clamp_hw_limit(max(top_single_turn, bottom_single_turn))
+        min_limit = max(0, min(self.SINGLE_TURN_TICKS - 1, min(top_single_turn, bottom_single_turn)))
+        max_limit = max(0, min(self.SINGLE_TURN_TICKS - 1, max(top_single_turn, bottom_single_turn)))
 
         if min_limit >= max_limit:
-            if min_limit == self.hw_position_limit_max:
-                min_limit = max(self.hw_position_limit_min, self.hw_position_limit_max - 1)
-                max_limit = self.hw_position_limit_max
-            else:
-                max_limit = min(self.hw_position_limit_max, min_limit + 1)
+            max_limit = min(self.SINGLE_TURN_TICKS - 1, min_limit + 1)
 
-        bottom_position = top_position + bottom_offset
+        bottom_position = top_single_turn + (bottom_sign * bottom_offset)
 
-        self._write4(self.ADDR_MIN_POSITION_LIMIT, min_limit)
-        self._write4(self.ADDR_MAX_POSITION_LIMIT, max_limit)
-
-        actual_min_limit, actual_max_limit = self._read_position_limits_from_table()
-
-        self._top_position = top_position
+        self._top_position = top_single_turn
+        self._top_position_raw = top_position_raw
         self._bottom_position = bottom_position
-        self._configured_min_limit = min_limit
-        self._configured_max_limit = max_limit
-        self._actual_min_limit = actual_min_limit
-        self._actual_max_limit = actual_max_limit
+        self._soft_min_limit = min_limit
+        self._soft_max_limit = max_limit
+
+    def _at_soft_limit_for_direction(self, direction, current_position):
+        if self._soft_min_limit is None or self._soft_max_limit is None:
+            return False
+        if direction == 'UP':
+            return current_position >= self._soft_max_limit
+        if direction == 'DOWN':
+            return current_position <= self._soft_min_limit
+        return False
+
+    def _stop_without_lock(self):
+        self._write4(self.ADDR_GOAL_VELOCITY, 0)
+        self._last_direction = None
+
+    def _software_limit_loop(self):
+        while not self._limit_stop_event.is_set():
+            try:
+                with self._lock:
+                    if self._closed or not self._connected or self._last_direction is None:
+                        pass
+                    else:
+                        current_raw_value = self._read4(self.ADDR_PRESENT_POSITION)
+                        current_position = current_raw_value % self.SINGLE_TURN_TICKS
+                        if self._at_soft_limit_for_direction(self._last_direction, current_position):
+                            self._stop_without_lock()
+                            self._software_limit_stop_count += 1
+                            print(
+                                f'Software limit stop: direction={self._last_direction}, '
+                                f'current={current_position}, '
+                                f'min={self._soft_min_limit}, max={self._soft_max_limit}'
+                            )
+            except Exception as error:
+                print(f'Software limit watchdog error: {error}')
+
+            self._limit_stop_event.wait(self.SOFTWARE_LIMIT_LOOP_SECONDS)
+
+    def _start_limit_watcher(self):
+        if self._limit_thread is not None and self._limit_thread.is_alive():
+            return
+        self._limit_stop_event.clear()
+        self._limit_thread = threading.Thread(target=self._software_limit_loop, daemon=True)
+        self._limit_thread.start()
 
     def set_velocity(self, velocity):
         with self._lock:
@@ -278,13 +290,25 @@ class DynamixelMotorController:
         if direction_upper not in {'UP', 'DOWN'}:
             raise ValueError('Direction must be either "up" or "down"')
 
-        velocity = self.speed_up if direction_upper == 'UP' else self.speed_down
-        self.set_velocity(velocity)
-        self._last_direction = direction_upper
+        with self._lock:
+            self._ensure_connection()
+            current_raw_value = self._read4(self.ADDR_PRESENT_POSITION)
+            current_position = current_raw_value % self.SINGLE_TURN_TICKS
+            if self._at_soft_limit_for_direction(direction_upper, current_position):
+                self._stop_without_lock()
+                raise RuntimeError(
+                    f'Software limit reached for {direction_upper} '
+                    f'(current={current_position}, min={self._soft_min_limit}, max={self._soft_max_limit})'
+                )
+
+            velocity = self.speed_up if direction_upper == 'UP' else self.speed_down
+            self._write4(self.ADDR_GOAL_VELOCITY, velocity)
+            self._last_direction = direction_upper
 
     def stop(self):
-        self.set_velocity(0)
-        self._last_direction = None
+        with self._lock:
+            self._ensure_connection()
+            self._stop_without_lock()
 
     def send_mode(self, mode_command):
         if mode_command not in {'MANUAL', 'LOAD', 'UNLOAD'}:
@@ -292,11 +316,15 @@ class DynamixelMotorController:
         self._last_mode = mode_command
 
     def close(self):
+        limit_thread = None
         with self._lock:
             if self._closed:
                 return
 
             if self._connected:
+                self._limit_stop_event.set()
+                limit_thread = self._limit_thread
+                self._limit_thread = None
                 try:
                     self._write4(self.ADDR_GOAL_VELOCITY, 0)
                 except Exception:
@@ -313,6 +341,9 @@ class DynamixelMotorController:
             self._connected = False
             self._closed = True
 
+        if limit_thread is not None:
+            limit_thread.join(timeout=1.0)
+
     @property
     def last_direction(self):
         return self._last_direction
@@ -324,11 +355,11 @@ class DynamixelMotorController:
     def get_limit_state(self):
         return {
             'top_position': self._top_position,
+            'top_position_raw': self._top_position_raw,
             'bottom_position': self._bottom_position,
-            'min_position_limit': self._configured_min_limit,
-            'max_position_limit': self._configured_max_limit,
-            'actual_min_position_limit': self._actual_min_limit,
-            'actual_max_position_limit': self._actual_max_limit,
+            'soft_min_limit': self._soft_min_limit,
+            'soft_max_limit': self._soft_max_limit,
+            'software_limit_stop_count': self._software_limit_stop_count,
             'top_to_bottom_ticks': self.top_to_bottom_ticks,
             'down_increases_position': self.down_increases_position,
         }
@@ -336,11 +367,10 @@ class DynamixelMotorController:
     def read_position_state(self):
         with self._lock:
             self._ensure_connection()
-            current_position = self._read_present_position()
+            current_raw_value = self._read4(self.ADDR_PRESENT_POSITION)
+            current_position = current_raw_value % self.SINGLE_TURN_TICKS
+            current_position_raw = self._to_signed_32(current_raw_value)
             top_position = self._top_position
-            actual_min_limit, actual_max_limit = self._read_position_limits_from_table()
-            self._actual_min_limit = actual_min_limit
-            self._actual_max_limit = actual_max_limit
 
         offset_from_top = None
         if top_position is not None:
@@ -348,10 +378,13 @@ class DynamixelMotorController:
 
         return {
             'current_position': current_position,
+            'current_position_raw': current_position_raw,
             'top_position': top_position,
+            'top_position_raw': self._top_position_raw,
             'offset_from_top': offset_from_top,
-            'actual_min_position_limit': actual_min_limit,
-            'actual_max_position_limit': actual_max_limit,
+            'soft_min_limit': self._soft_min_limit,
+            'soft_max_limit': self._soft_max_limit,
+            'software_limit_stop_count': self._software_limit_stop_count,
         }
 
 
@@ -369,17 +402,13 @@ def resolve_dynamixel_port():
 
 DYNAMIXEL_PORT = resolve_dynamixel_port()
 MOTOR_TOP_TO_BOTTOM_TICKS = int(os.getenv('MOTOR_TOP_TO_BOTTOM_TICKS', '12000'))
-MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
-MOTOR_HW_MIN_POSITION_LIMIT = int(os.getenv('MOTOR_HW_MIN_POSITION_LIMIT', '0'))
-MOTOR_HW_MAX_POSITION_LIMIT = int(os.getenv('MOTOR_HW_MAX_POSITION_LIMIT', '4095'))
+MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_PRINT = os.getenv('MOTOR_OFFSET_DEBUG_PRINT', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS = float(os.getenv('MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS', '0.5'))
 motor_controller = DynamixelMotorController(
     device_name=DYNAMIXEL_PORT,
     top_to_bottom_ticks=MOTOR_TOP_TO_BOTTOM_TICKS,
     down_increases_position=MOTOR_DOWN_INCREASES_POSITION,
-    hw_position_limit_min=MOTOR_HW_MIN_POSITION_LIMIT,
-    hw_position_limit_max=MOTOR_HW_MAX_POSITION_LIMIT,
 )
 
 
@@ -399,8 +428,9 @@ class MotorOffsetCalibrationPrinter:
                     f"current={state['current_position']} "
                     f"top={state['top_position']} "
                     f"offset_from_top={state['offset_from_top']} "
-                    f"addr52_min={state['actual_min_position_limit']} "
-                    f"addr48_max={state['actual_max_position_limit']}"
+                    f"soft_min={state['soft_min_limit']} "
+                    f"soft_max={state['soft_max_limit']} "
+                    f"soft_stops={state['software_limit_stop_count']}"
                 )
             except Exception as error:
                 print(f'[Motor Cal] read failed: {error}')
