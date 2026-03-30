@@ -62,6 +62,14 @@ _grid_cache = {
     'shelves': None,
 }
 
+# Cache for SLAM map pathfinding (pixel-based A*)
+_slam_path_cache = {
+    'obstacle_map': None,  # 2D list[row][col]: True = obstacle
+    'cost_map': None,      # 2D list[row][col]: float, INF = impassable
+    'width': None,
+    'height': None,
+}
+
 
 class DynamixelMotorController:
     ADDR_TORQUE_ENABLE = 64
@@ -977,6 +985,75 @@ def initialize_grid_cache(grid_resolution=1.0):
     print(f"Grid cache initialized: {columns}x{rows} cells, {len(blocked_cells)} blocked")
 
 
+def initialize_slam_path_cache():
+    """Load lobby_map.png and build obstacle + cost maps for SLAM-based A* pathfinding.
+
+    Three stages:
+      1. Binarize pixels  → obstacle_map[row][col]
+      2. BFS multi-source distance transform → dist_map[row][col] (distance to nearest obstacle)
+      3. Cost map → cost = 1.0 + WALL_WEIGHT / (dist + 1)  (far from walls = cheaper)
+    """
+    global _slam_path_cache
+    if not HAS_PIL or not os.path.isfile(SLAM_OUTPUT_PNG):
+        print("SLAM path cache: map PNG not available, skipping.")
+        return
+
+    try:
+        img = Image.open(SLAM_OUTPUT_PNG).convert('RGBA')
+        w, h = img.size
+        pixels = img.load()
+
+        # --- Stage 1: Binarize ---
+        # lobby_map.png colours set by convert_slam_pgm_to_png():
+        #   free     (248, 250, 252)  v >= 205
+        #   obstacle (30,  41,  59)   v <= 50
+        #   unknown  (148, 163, 184)  otherwise  → treat as obstacle (conservative)
+        obstacle_map = [[True] * w for _ in range(h)]
+        for row in range(h):
+            for col in range(w):
+                r, g, b, _ = pixels[col, row]
+                if r >= 240 and g >= 240 and b >= 240:
+                    obstacle_map[row][col] = False
+
+        # --- Stage 2: BFS Distance Transform ---
+        # Seed every obstacle pixel with dist=0, then expand outward.
+        INF = float('inf')
+        dist_map = [[INF] * w for _ in range(h)]
+        queue = deque()
+        for row in range(h):
+            for col in range(w):
+                if obstacle_map[row][col]:
+                    dist_map[row][col] = 0
+                    queue.append((row, col))
+
+        _nbrs4 = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        while queue:
+            r, c = queue.popleft()
+            nd = dist_map[r][c] + 1
+            for dr, dc in _nbrs4:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w and nd < dist_map[nr][nc]:
+                    dist_map[nr][nc] = nd
+                    queue.append((nr, nc))
+
+        # --- Stage 3: Cost Map ---
+        WALL_WEIGHT = 8.0
+        cost_map = [[INF] * w for _ in range(h)]
+        for row in range(h):
+            for col in range(w):
+                if not obstacle_map[row][col]:
+                    cost_map[row][col] = 1.0 + WALL_WEIGHT / (dist_map[row][col] + 1.0)
+
+        _slam_path_cache['obstacle_map'] = obstacle_map
+        _slam_path_cache['cost_map'] = cost_map
+        _slam_path_cache['width'] = w
+        _slam_path_cache['height'] = h
+        print(f"SLAM path cache initialized: {w}x{h} px")
+
+    except Exception as e:
+        print(f"SLAM path cache initialization failed: {e}")
+
+
 def find_path(start, end, grid_resolution=1.0):
     # Initialize cache if not already done
     if _grid_cache['blocked_cells'] is None or _grid_cache['grid_resolution'] != grid_resolution:
@@ -1142,6 +1219,190 @@ def get_path():
             'worldHeight': path_result['world_height'],
         },
     })
+
+
+def _slam_nearest_free(col, row):
+    """BFS from (col, row) to find the nearest free pixel in the SLAM obstacle map."""
+    obs = _slam_path_cache['obstacle_map']
+    w = _slam_path_cache['width']
+    h = _slam_path_cache['height']
+    if not obs[row][col]:
+        return col, row
+    visited = {(col, row)}
+    q = deque([(col, row)])
+    while q:
+        c, r = q.popleft()
+        for dc, dr in ((-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)):
+            nc, nr = c + dc, r + dr
+            if 0 <= nc < w and 0 <= nr < h and (nc, nr) not in visited:
+                if not obs[nr][nc]:
+                    return nc, nr
+                visited.add((nc, nr))
+                q.append((nc, nr))
+    return None
+
+
+def _douglas_peucker(points, epsilon):
+    """Recursively simplify a polyline using the Douglas-Peucker algorithm."""
+    if len(points) < 3:
+        return points
+    start, end = points[0], points[-1]
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    seg_len = (dx*dx + dy*dy) ** 0.5
+
+    max_dist = 0.0
+    max_idx = 0
+    for i in range(1, len(points) - 1):
+        if seg_len == 0:
+            d = ((points[i][0] - start[0])**2 + (points[i][1] - start[1])**2) ** 0.5
+        else:
+            # Perpendicular distance from point to line
+            d = abs(dy * points[i][0] - dx * points[i][1] + end[0]*start[1] - end[1]*start[0]) / seg_len
+        if d > max_dist:
+            max_dist = d
+            max_idx = i
+
+    if max_dist > epsilon:
+        left  = _douglas_peucker(points[:max_idx + 1], epsilon)
+        right = _douglas_peucker(points[max_idx:], epsilon)
+        return left[:-1] + right
+    return [start, end]
+
+
+def slam_find_path(start_col, start_row, goal_col, goal_row):
+    """A* on the SLAM cost map (pixel grid, 8-directional).
+
+    Returns a list of (col, row) pixel tuples, or None if no path found.
+    The cost map penalises pixels close to walls so the path follows
+    corridor centres.
+    """
+    if _slam_path_cache['cost_map'] is None:
+        return None
+
+    cost_map = _slam_path_cache['cost_map']
+    w = _slam_path_cache['width']
+    h = _slam_path_cache['height']
+    INF = float('inf')
+
+    # Snap start/goal to nearest free cell if they land on an obstacle
+    sc = _slam_nearest_free(start_col, start_row)
+    gc = _slam_nearest_free(goal_col, goal_row)
+    if sc is None or gc is None:
+        return None
+    start_col, start_row = sc
+    goal_col, goal_row   = gc
+
+    start = (start_col, start_row)
+    goal  = (goal_col,  goal_row)
+
+    if start == goal:
+        return [start]
+
+    # 8-directional neighbours: (dcol, drow, base_move_cost)
+    DIRS = [
+        (-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
+        (-1, -1, 1.414), (-1, 1, 1.414), (1, -1, 1.414), (1, 1, 1.414),
+    ]
+
+    def heuristic(col, row):
+        return ((col - goal_col)**2 + (row - goal_row)**2) ** 0.5
+
+    g_score = {start: 0.0}
+    came_from = {}
+    open_heap = [(heuristic(*start), 0.0, start)]
+
+    while open_heap:
+        f, g, current = heapq.heappop(open_heap)
+        if current == goal:
+            # Reconstruct path
+            path = []
+            node = current
+            while node in came_from:
+                path.append(node)
+                node = came_from[node]
+            path.append(start)
+            path.reverse()
+            return path
+
+        if g > g_score.get(current, INF):
+            continue
+
+        cc, cr = current
+        for dc, dr, move_base in DIRS:
+            nc, nr = cc + dc, cr + dr
+            if not (0 <= nc < w and 0 <= nr < h):
+                continue
+            cell_cost = cost_map[nr][nc]
+            if cell_cost == INF:
+                continue
+            # Anti-corner-cutting: diagonal move requires both axis-neighbours free
+            if dc != 0 and dr != 0:
+                if cost_map[cr][cc + dc] == INF or cost_map[cr + dr][cc] == INF:
+                    continue
+            tentative_g = g + move_base * cell_cost
+            neighbour = (nc, nr)
+            if tentative_g < g_score.get(neighbour, INF):
+                g_score[neighbour] = tentative_g
+                came_from[neighbour] = current
+                heapq.heappush(open_heap, (tentative_g + heuristic(nc, nr), tentative_g, neighbour))
+
+    return None
+
+
+@app.route('/api/slam_preview_path')
+def get_slam_preview_path():
+    """Return a pre-computed navigation preview path using the SLAM map.
+
+    Query params (all ROS-frame floats):
+      sx, sy  – robot start position
+      gx, gy  – goal position
+    Response JSON: { "path": [[x_ros, y_ros], ...], "point_count": N }
+    """
+    if _slam_path_cache['cost_map'] is None:
+        return jsonify({'error': 'SLAM map not ready'}), 503
+
+    try:
+        sx = float(request.args['sx'])
+        sy = float(request.args['sy'])
+        gx = float(request.args['gx'])
+        gy = float(request.args['gy'])
+    except (KeyError, ValueError):
+        return jsonify({'error': 'Missing or invalid sx/sy/gx/gy params'}), 400
+
+    map_info = load_slam_map_info()
+    if map_info is None:
+        return jsonify({'error': 'Map metadata unavailable'}), 503
+
+    res  = map_info['resolution']
+    ox   = map_info['origin_x']
+    oy   = map_info['origin_y']
+    h_px = map_info['height_px']
+
+    def ros_to_px(xr, yr):
+        col = int(round((xr - ox) / res))
+        row = int(round((h_px - 1) - (yr - oy) / res))
+        return col, row
+
+    def px_to_ros(col, row):
+        xr = col * res + ox
+        yr = (h_px - 1 - row) * res + oy
+        return xr, yr
+
+    start_col, start_row = ros_to_px(sx, sy)
+    goal_col,  goal_row  = ros_to_px(gx, gy)
+
+    pixel_path = slam_find_path(start_col, start_row, goal_col, goal_row)
+    if not pixel_path:
+        return jsonify({'error': 'No path found'}), 404
+
+    # Simplify with Douglas-Peucker (epsilon = 3 pixels)
+    simplified = _douglas_peucker(pixel_path, epsilon=3.0)
+
+    # Convert back to ROS coordinates
+    ros_path = [list(px_to_ros(c, r)) for c, r in simplified]
+
+    return jsonify({'path': ros_path, 'point_count': len(ros_path)})
 
 
 def convert_slam_pgm_to_png():
@@ -1371,5 +1632,7 @@ if __name__ == '__main__':
     convert_slam_pgm_to_png()
     print("Initializing pathfinding grid cache...")
     initialize_grid_cache(grid_resolution=1.0)
+    print("Initializing SLAM path cache...")
+    initialize_slam_path_cache()
     print(f"Starting server on port {args.port}...")
     app.run(debug=False, host='0.0.0.0', port=args.port)
