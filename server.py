@@ -608,6 +608,14 @@ class MotorAutomationController:
             self._state['same_read_count'] = next_same_count
             self._state['updated_at'] = time.time()
 
+        print(
+            '[Ultrasonic] '
+            f'S0={next_values[0]:.1f}cm '
+            f'S1={next_values[1]:.1f}cm '
+            f'S2={next_values[2]:.1f}cm '
+            f'S3={next_values[3]:.1f}cm'
+        )
+
     def _sensor_detected(self, sensor_values):
         # Any sensor reading below the no-object baseline means an object is present.
         return any(value < self.NO_OBJECT_DISTANCE_CM for value in sensor_values)
