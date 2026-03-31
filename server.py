@@ -72,6 +72,7 @@ _slam_path_cache = {
 
 
 class DynamixelMotorController:
+    MOTOR_SPEED = 5
     ADDR_TORQUE_ENABLE = 64
     ADDR_GOAL_VELOCITY = 104
     ADDR_PROFILE_ACCEL = 108
@@ -87,8 +88,8 @@ class DynamixelMotorController:
         device_name,
         baudrate=57600,
         dxl_id=1,
-        speed_up=-256, #TODO test lower speeds for more torque if necessary
-        speed_down=256,
+        speed_up= MOTOR_SPEED * -1,
+        speed_down=MOTOR_SPEED,
         profile_accel=30,
         top_to_bottom_ticks=12000, #TODO measure actual ticks from top to bottom
         down_increases_position=True,
@@ -333,6 +334,26 @@ class DynamixelMotorController:
         with self._lock:
             self._ensure_connection()
             self._stop_without_lock()
+
+    def reboot(self):
+        with self._lock:
+            self._ensure_connection()
+            self._stop_without_lock()
+
+            # Re-initialize runtime motor state without dropping the serial session.
+            try:
+                self._write1(self.ADDR_TORQUE_ENABLE, 0)
+            except Exception:
+                pass
+
+            time.sleep(0.2)
+            self._flush()
+            self._write1(self.ADDR_OPERATING_MODE, self.OPERATING_MODE_VELOCITY)
+            self._write4(self.ADDR_PROFILE_ACCEL, self.profile_accel)
+            self._write1(self.ADDR_TORQUE_ENABLE, 1)
+
+            self._configure_software_limits_from_top()
+            self._last_direction = None
 
     def send_mode(self, mode_command):
         if mode_command not in {'MANUAL', 'LOAD', 'UNLOAD'}:
@@ -1589,6 +1610,15 @@ def get_motor_state():
         return jsonify(motor_controller.read_ui_state())
     except Exception as error:
         return jsonify({'error': f'Failed to read motor state: {error}'}), 500
+
+
+@app.route('/api/motor/reboot', methods=['POST'])
+def reboot_motor():
+    try:
+        motor_controller.reboot()
+        return jsonify({'status': 'ok', 'state': motor_controller.read_ui_state()})
+    except Exception as error:
+        return jsonify({'error': f'Failed to reboot motor: {error}'}), 500
 
 
 @app.route('/api/motor/mode', methods=['POST'])

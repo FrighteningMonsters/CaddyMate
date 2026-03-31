@@ -13,13 +13,14 @@
     gap: 20px;
 }
 
-.header .back-button {
-    order: 2;
+.header h1 {
+    margin: 0;
 }
 
-.header h1 {
-    order: 1;
-    margin: 0;
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 .mode-controls {
@@ -55,6 +56,35 @@
 .mode-button.is-active:active {
     background-color: #0b67df;
     border-color: #0048b3;
+}
+
+.reboot-button {
+    min-height: 42px;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #ffffff;
+    background-color: #b45309;
+    border: 2px solid #92400e;
+    padding: 0 14px;
+}
+
+.reboot-button-small {
+    min-width: 88px;
+}
+
+.reboot-button:hover,
+.reboot-button:active {
+    background-color: #92400e;
+    border-color: #78350f;
+}
+
+.reboot-button.is-busy,
+.reboot-button:disabled {
+    background-color: #9ca3af;
+    border-color: #6b7280;
+    color: #f3f4f6;
+    cursor: wait;
 }
 
 .motor-controls {
@@ -113,6 +143,18 @@
 }
 
 @media (max-width: 900px) {
+    .header {
+        gap: 10px;
+    }
+
+    .header h1 {
+        font-size: 28px;
+    }
+
+    .header-actions {
+        gap: 8px;
+    }
+
     .mode-controls {
         gap: 10px;
     }
@@ -120,6 +162,12 @@
     .mode-button {
         min-height: 56px;
         font-size: 18px;
+    }
+
+    .reboot-button {
+        min-height: 36px;
+        font-size: 14px;
+        padding: 0 10px;
     }
 
     .motor-controls {
