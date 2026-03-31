@@ -72,7 +72,7 @@ _slam_path_cache = {
 
 
 class DynamixelMotorController:
-    MOTOR_SPEED = 5
+    MOTOR_SPEED = 150
     ADDR_TORQUE_ENABLE = 64
     ADDR_GOAL_VELOCITY = 104
     ADDR_PROFILE_ACCEL = 108
