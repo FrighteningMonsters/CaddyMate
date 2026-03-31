@@ -38,7 +38,7 @@ DB_PATH = 'data/caddymate_store.db'
 LAYOUT_PATH = 'store_layout.json'
 SLAM_PGM_PATH = 'lab_final.pgm'
 SLAM_YAML_PATH = 'lab_final.yaml'
-SLAM_OUTPUT_PNG = 'lobby_map.png'
+SLAM_OUTPUT_PNG = 'lab_final.png'
 ROS_CONFIG_PATH = 'ros_config.json'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VOICE_MODEL_PATH = os.path.join(BASE_DIR, 'resources', 'vosk-model-small-en-us-0.15')
@@ -1027,7 +1027,7 @@ def initialize_grid_cache(grid_resolution=1.0):
 
 
 def initialize_slam_path_cache():
-    """Load lobby_map.png and build obstacle + cost maps for SLAM-based A* pathfinding.
+    """Load lab_final.png and build obstacle + cost maps for SLAM-based A* pathfinding.
 
     Three stages:
       1. Binarize pixels  → obstacle_map[row][col]
@@ -1045,7 +1045,7 @@ def initialize_slam_path_cache():
         pixels = img.load()
 
         # --- Stage 1: Binarize ---
-        # lobby_map.png colours set by convert_slam_pgm_to_png():
+        # lab_final.png colours set by convert_slam_pgm_to_png():
         #   free     (248, 250, 252)  v >= 205
         #   obstacle (30,  41,  59)   v <= 50
         #   unknown  (148, 163, 184)  otherwise  → treat as obstacle (conservative)
@@ -1447,7 +1447,7 @@ def get_slam_preview_path():
 
 
 def convert_slam_pgm_to_png():
-    """Convert lobby_final.pgm to styled lobby_map.png for UI display."""
+    """Convert lab_final.pgm to styled lab_final.png for UI display."""
     if not HAS_PIL or not os.path.isfile(SLAM_PGM_PATH):
         return
     try:

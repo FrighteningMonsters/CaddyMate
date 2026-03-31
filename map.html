@@ -151,6 +151,12 @@
       let previewPath = null;      // [[col, row], ...] pixel coords for trimming
       let robotRosPos = null;      // {x, y} latest ROS-frame robot position
 
+      // Manual drive arrival detection
+      const MANUAL_ARRIVAL_RADIUS_M = 0.7;
+      const MANUAL_ARRIVAL_DELAY_MS = 2000;
+      let manualArrivalEnabled = false;
+      let manualArrivalTimerId = null;
+
       let cameraScale = 1;
       const EXIT_MAP_DELAY_MS = 2200;
 
@@ -229,7 +235,7 @@
         userMarker.style.top = p.y + "px";
         userArrow.style.left = p.x + "px";
         userArrow.style.top = p.y + "px";
-        userArrow.style.transform = `translate(-50%,-100%) rotate(${pose.angle + 90}deg)`;
+        userArrow.style.transform = `translate(-50%,-100%) rotate(${90 - pose.angle}deg)`;
       }
 
       function upsertTargetMarker() {
@@ -358,6 +364,20 @@
         layer.batchDraw();
       }
 
+      function checkManualArrival() {
+        if (navGoalSentAt) return;           // autonomous nav in progress
+        if (hasReachedTarget) return;
+        if (!manualArrivalEnabled) return;
+        if (!robotRosPos) return;
+        if (selectedXRos == null || selectedYRos == null) return;
+
+        const dx = robotRosPos.x - selectedXRos;
+        const dy = robotRosPos.y - selectedYRos;
+        if (Math.sqrt(dx * dx + dy * dy) <= MANUAL_ARRIVAL_RADIUS_M) {
+          triggerArrival();
+        }
+      }
+
       function showMapUnavailablePlaceholder() {
         layer.destroyChildren();
         targetMarker = null;
@@ -407,7 +427,7 @@
       let amclCheckIntervalId = null;
 
       async function loadSlamLayout() {
-        const imgRes = await fetch("lobby_map.png", { cache: "force-cache" });
+        const imgRes = await fetch("lab_final.png", { cache: "force-cache" });
         if (!imgRes.ok) {
           showMapUnavailablePlaceholder();
           syncUser();
@@ -415,7 +435,7 @@
         }
         const imgObj = new Image();
         imgObj.crossOrigin = "";
-        imgObj.src = "lobby_map.png";
+        imgObj.src = "lab_final.png";
         await new Promise((resolve, reject) => {
           imgObj.onload = resolve;
           imgObj.onerror = reject;
@@ -562,12 +582,19 @@
                   userMarker.style.display = "";
                   userArrow.style.display = "";
                   syncUser();
-                  // First position fix → request full path; subsequent → trim
+                  // First position fix → request full path + arm arrival detection
                   if (!previewPath) {
                     requestPreviewPath();
+                    if (!manualArrivalEnabled && !manualArrivalTimerId) {
+                      manualArrivalTimerId = setTimeout(() => {
+                        manualArrivalEnabled = true;
+                        manualArrivalTimerId = null;
+                      }, MANUAL_ARRIVAL_DELAY_MS);
+                    }
                   } else {
                     trimPreviewPath();
                   }
+                  checkManualArrival();
                 }
               });
               if (amclCheckIntervalId) clearInterval(amclCheckIntervalId);
@@ -585,6 +612,8 @@
               document.getElementById("disconnectBanner")?.classList.add("visible");
               document.getElementById("positionUnavailableBanner")?.classList.remove("visible");
               if (amclCheckIntervalId) { clearInterval(amclCheckIntervalId); amclCheckIntervalId = null; }
+              if (manualArrivalTimerId) { clearTimeout(manualArrivalTimerId); manualArrivalTimerId = null; }
+              manualArrivalEnabled = false;
               updateNavigateButtonState();
             });
             ros.on("close", () => {
@@ -593,6 +622,8 @@
               document.getElementById("disconnectBanner")?.classList.add("visible");
               document.getElementById("positionUnavailableBanner")?.classList.remove("visible");
               if (amclCheckIntervalId) { clearInterval(amclCheckIntervalId); amclCheckIntervalId = null; }
+              if (manualArrivalTimerId) { clearTimeout(manualArrivalTimerId); manualArrivalTimerId = null; }
+              manualArrivalEnabled = false;
               updateNavigateButtonState();
             });
           })
