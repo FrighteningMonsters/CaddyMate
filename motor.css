@@ -88,6 +88,17 @@
     border-color: #0b67df;
 }
 
+.direction-button.is-blocked,
+.direction-button.is-blocked:hover,
+.direction-button.is-blocked:active,
+.direction-button:disabled {
+    background-color: #9ca3af;
+    border-color: #6b7280;
+    color: #e5e7eb;
+    cursor: not-allowed;
+    opacity: 0.85;
+}
+
 .motor-status {
     width: 100%;
     min-height: 28px;

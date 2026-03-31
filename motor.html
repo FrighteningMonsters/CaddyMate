@@ -71,6 +71,10 @@
             let activeDirection = null;
             let activeMode = 'manual';
             let modeChangeInFlight = false;
+            const blockedDirections = {
+                up: false,
+                down: false,
+            };
 
             const MODE_LABELS = {
                 manual: 'Manual',
@@ -103,6 +107,45 @@
                 }
 
                 return message;
+            }
+
+            function getSoftwareLimitDirection(message, requestedDirection) {
+                if (!message) {
+                    return null;
+                }
+
+                const softwareLimitMatch = message.match(/Software limit reached for\s+(UP|DOWN)/i);
+                if (softwareLimitMatch) {
+                    return softwareLimitMatch[1].toLowerCase();
+                }
+
+                const requested = (requestedDirection || '').toLowerCase();
+                if (message.toLowerCase().includes('travel limit') && (requested === 'up' || requested === 'down')) {
+                    return requested;
+                }
+
+                return null;
+            }
+
+            function setDirectionBlocked(direction, isBlocked) {
+                if (!direction || !(direction in blockedDirections)) {
+                    return;
+                }
+
+                blockedDirections[direction] = !!isBlocked;
+                const button = document.querySelector('.direction-button[data-direction="' + direction + '"]');
+                if (!button) {
+                    return;
+                }
+
+                button.classList.toggle('is-blocked', !!isBlocked);
+                button.disabled = !!isBlocked;
+                button.setAttribute('aria-disabled', isBlocked ? 'true' : 'false');
+            }
+
+            function clearBlockedDirections() {
+                setDirectionBlocked('up', false);
+                setDirectionBlocked('down', false);
             }
 
             async function retryWithExponentialBackoff(fn, maxRetries = MAX_RETRIES) {
@@ -201,6 +244,11 @@
                     return;
                 }
 
+                if (blockedDirections[direction]) {
+                    setStatus('Cannot move ' + direction + ': platform is already at its travel limit.', true);
+                    return;
+                }
+
                 if (activeDirection !== null && activeDirection !== direction) {
                     await handleRelease(activeDirection);
                 }
@@ -211,9 +259,14 @@
 
                 try {
                     await sendMotorCommand('start', direction);
+                    clearBlockedDirections();
                 } catch (error) {
                     activeDirection = null;
                     document.querySelector('.direction-button[data-direction="' + direction + '"]').classList.remove('is-active');
+                    const blockedDirection = getSoftwareLimitDirection(error.message, direction);
+                    if (blockedDirection) {
+                        setDirectionBlocked(blockedDirection, true);
+                    }
                     setStatus(formatMotorError(error.message, direction), true);
                 }
             }
