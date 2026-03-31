@@ -36,8 +36,8 @@ CORS(app)
 
 DB_PATH = 'data/caddymate_store.db'
 LAYOUT_PATH = 'store_layout.json'
-SLAM_PGM_PATH = 'lobby_final.pgm'
-SLAM_YAML_PATH = 'lobby_final.yaml'
+SLAM_PGM_PATH = 'lab_final.pgm'
+SLAM_YAML_PATH = 'lab_final.yaml'
 SLAM_OUTPUT_PNG = 'lobby_map.png'
 ROS_CONFIG_PATH = 'ros_config.json'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
