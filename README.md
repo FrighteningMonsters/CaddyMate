@@ -79,7 +79,8 @@ The server will:
 - `GET /api/items/<category_id>` - Get items for a specific category
 - `GET /api/map_info` - Get SLAM map metadata (resolution, origin, dimensions)
 - `GET /api/ros_config` - Get rosbridge host and port for WebSocket connection
-- `POST /api/path` - Compute path between two points (used by server-side pathfinding; map page uses Nav2 `/plan` when connected)
+- `POST /api/path` - Compute path between two points (abstract layout grid; used internally)
+- `GET /api/slam_preview_path?sx=&sy=&gx=&gy=` - Compute A* preview path on the SLAM pixel map; returns ROS-frame waypoints
 
 ## Database
 
@@ -93,32 +94,20 @@ The `x_ros`, `y_ros`, `yaw_ros` columns store ROS map-frame coordinates for Turt
 
 ### Items with navigation targets (current)
 
-Only the following items have ROS coordinates and show a target on the map page:
+Only the following items have ROS coordinates and show a target on the map page.
+Coordinates are calibrated for the **lab SLAM map** (`lab_final.pgm`, origin `[-3.45, -4.01]`, resolution `0.05 m/px`):
 
-| Item           | x (m) | y (m) | yaw (rad) |
-|----------------|------:|------:|----------:|
-| Apples         | -4.0  | 2.0   | 0.0       |
-| White bread    | -1.5  | 4.5   | 0.0       |
-| Whole milk     | 1.0   | 5.5   | 1.57      |
-| Chicken breast| 3.5   | 4.0   | 3.14      |
-| Frozen pizza   | 5.0   | 2.5   | 0.0       |
-| White rice     | 6.5   | 0.5   | 1.57      |
-| Crisps         | 5.0   | -1.5  | 3.14      |
-| Still water    | 3.0   | -3.0  | 0.0       |
-| Red wine       | 1.0   | -2.5  | 0.0       |
-| Ale            | 1.5   | -2.0  | 0.0       |
-| Toilet paper   | -1.5  | -2.0  | 1.57      |
-| Paracetamol    | -3.5  | -1.0  | 0.0       |
-| Shampoo        | -5.0  | 1.0   | 1.57      |
-| Nappies        | -3.0  | 4.0   | 0.0       |
-| Dog food       | 7.5   | 3.5   | 3.14      |
-| Hummus         | 0.0   | 0.5   | 0.0       |
+| Item       | x (m) | y (m) | yaw (rad) |
+|------------|------:|------:|----------:|
+| Apples     | 4.4   | 4.0   | 0.0       |
+| Whole milk | 3.5   | 11.0  | 0.0       |
+| Bananas    | 2.6   | -0.6  | 0.0       |
 
 To add or update coordinates, edit `item_ros_coords` in `data/Database_Creator.py` and re-run the script.
 
 ## TurtleBot Integration
 
-When `lobby_final.pgm` and `lobby_final.yaml` (SLAM map) are in the project root, the map page loads the SLAM map and connects to ROS via rosbridge.
+When `lab_final.pgm` and `lab_final.yaml` (SLAM map) are in the project root, the map page loads the SLAM map and connects to ROS via rosbridge.
 
 ### Prerequisites
 
@@ -131,12 +120,16 @@ ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
 
 ### Map Page Flow
 
-1. `GET /api/map_info` → SLAM mode enabled; `lobby_map.png` displayed as background
+1. `GET /api/map_info` → SLAM mode enabled; `lobby_map.png` (converted from `lab_final.pgm`) displayed as background
 2. WebSocket connection to rosbridge → `/amcl_pose` (robot position), `/plan` (Nav2 path), `/navigate_to_pose/_action/status` (arrival/failure)
 3. Green marker = target item (items with `x_ros`, `y_ros` only)
-4. **Navigate** button → enables motor, publishes `/goal_pose`, monitors status
-5. On arrival (status SUCCEEDED) or failure (CANCELED/ABORTED) → overlay shown; motor released
-6. **Stop** button cancels navigation and releases motor
+4. **Preview path** (orange dashed line) — drawn automatically as soon as ROS connects and robot position is known, using server-side A* on the SLAM pixel map; no Navigate press required
+   - Path follows corridor centres (wall-penalised cost map via BFS distance transform)
+   - Trims in sync with every `/amcl_pose` update; re-plans if robot deviates > 20 px from path
+   - Hidden when Navigate is pressed; restored from current position on failure/cancel
+5. **Navigate** button → enables motor, publishes `/goal_pose`, monitors status
+6. On arrival (status SUCCEEDED) or failure (CANCELED/ABORTED) → overlay shown; motor released
+7. **Stop** button cancels navigation and releases motor
 
 ### Network Topology (Demo Setup)
 

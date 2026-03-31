@@ -527,24 +527,12 @@ def parse_aisle_position(raw_value):
     return max(0.0, min(1.0, parsed))
 
 
-# ROS map frame coordinates (x, y, yaw in radians) for demo items on lobby SLAM map
+# ROS map frame coordinates (x, y, yaw in radians) for demo items on lab SLAM map
+# origin: [-3.45, -4.01], resolution: 0.05, map size: 300x370 px
 item_ros_coords = {
-    "Apples": (-0.522, 3.207, 0.0),
-    "White bread": (-1.5, 4.5, 0.0),
-    "Whole milk": (1.0, 5.5, 1.57),
-    "Chicken breast": (3.5, 4.0, 3.14),
-    "Frozen pizza": (5.0, 2.5, 0.0),
-    "White rice": (6.5, 0.5, 1.57),
-    "Crisps": (5.0, -1.5, 3.14),
-    "Still water": (3.0, -3.0, 0.0),
-    "Red wine": (1.0, -2.5, 0.0),
-    "Ale": (1.5, -2.0, 0.0),
-    "Toilet paper": (-1.5, -2.0, 1.57),
-    "Paracetamol": (-3.5, -1.0, 0.0),
-    "Shampoo": (-5.0, 1.0, 1.57),
-    "Nappies": (-3.0, 4.0, 0.0),
-    "Dog food": (7.5, 3.5, 3.14),
-    "Hummus": (0.0, 0.5, 0.0),
+    "Apples":     (4.4,  4.0,  0.0),
+    "Whole milk": (3.5,  11.0, 0.0),
+    "Bananas":    (2.6, -0.6,  0.0),
 }
 
 
