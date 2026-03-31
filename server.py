@@ -251,19 +251,7 @@ class DynamixelMotorController:
         self._soft_max_limit = max_limit
 
     def _at_soft_limit_for_direction(self, direction, current_position):
-        if self._soft_min_limit is None or self._soft_max_limit is None:
-            return False
-
-        if direction == 'UP':
-            if self.down_increases_position:
-                return current_position <= self._soft_min_limit
-            return current_position >= self._soft_max_limit
-
-        if direction == 'DOWN':
-            if self.down_increases_position:
-                return current_position >= self._soft_max_limit
-            return current_position <= self._soft_min_limit
-
+        # Software travel limits are intentionally disabled for full manual control.
         return False
 
     def _map_requested_direction(self, direction):
@@ -467,11 +455,26 @@ def resolve_dynamixel_port():
     return 'COM13'
 
 
+def parse_env_bool(name, default=False):
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return bool(default)
+
+    normalized = raw_value.strip()
+    if '#' in normalized:
+        normalized = normalized.split('#', 1)[0].strip()
+
+    if normalized == '':
+        return bool(default)
+
+    return normalized.lower() not in {'0', 'false', 'no', 'off'}
+
+
 DYNAMIXEL_PORT = resolve_dynamixel_port()
 MOTOR_TOP_TO_BOTTOM_TICKS = int(os.getenv('MOTOR_TOP_TO_BOTTOM_TICKS', '12000'))
-MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
-MOTOR_SWAP_DIRECTION_COMMANDS = os.getenv('MOTOR_SWAP_DIRECTION_COMMANDS', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
-MOTOR_OFFSET_DEBUG_PRINT = os.getenv('MOTOR_OFFSET_DEBUG_PRINT', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+MOTOR_DOWN_INCREASES_POSITION = parse_env_bool('MOTOR_DOWN_INCREASES_POSITION', default=True)
+MOTOR_SWAP_DIRECTION_COMMANDS = parse_env_bool('MOTOR_SWAP_DIRECTION_COMMANDS', default=True)
+MOTOR_OFFSET_DEBUG_PRINT = parse_env_bool('MOTOR_OFFSET_DEBUG_PRINT', default=True)
 MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS = float(os.getenv('MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS', '0.5'))
 motor_controller = DynamixelMotorController(
     device_name=DYNAMIXEL_PORT,
