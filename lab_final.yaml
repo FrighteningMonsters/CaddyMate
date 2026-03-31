@@ -1,4 +1,4 @@
-image: map_lab.pgm
+image: lab_final.pgm
 mode: trinary
 resolution: 0.05
 origin: [-3.45, -4.01, 0]

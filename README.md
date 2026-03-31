@@ -120,7 +120,7 @@ ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
 
 ### Map Page Flow
 
-1. `GET /api/map_info` → SLAM mode enabled; `lobby_map.png` (converted from `lab_final.pgm`) displayed as background
+1. `GET /api/map_info` → SLAM mode enabled; `lab_final.png` (converted from `lab_final.pgm`) displayed as background
 2. WebSocket connection to rosbridge → `/amcl_pose` (robot position), `/plan` (Nav2 path), `/navigate_to_pose/_action/status` (arrival/failure)
 3. Green marker = target item (items with `x_ros`, `y_ros` only)
 4. **Preview path** (orange dashed line) — drawn automatically as soon as ROS connects and robot position is known, using server-side A* on the SLAM pixel map; no Navigate press required

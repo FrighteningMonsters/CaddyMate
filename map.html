@@ -235,7 +235,7 @@
         userMarker.style.top = p.y + "px";
         userArrow.style.left = p.x + "px";
         userArrow.style.top = p.y + "px";
-        userArrow.style.transform = `translate(-50%,-100%) rotate(${pose.angle + 90}deg)`;
+        userArrow.style.transform = `translate(-50%,-100%) rotate(${90 - pose.angle}deg)`;
       }
 
       function upsertTargetMarker() {
@@ -427,7 +427,7 @@
       let amclCheckIntervalId = null;
 
       async function loadSlamLayout() {
-        const imgRes = await fetch("lobby_map.png", { cache: "force-cache" });
+        const imgRes = await fetch("lab_final.png", { cache: "force-cache" });
         if (!imgRes.ok) {
           showMapUnavailablePlaceholder();
           syncUser();
@@ -435,7 +435,7 @@
         }
         const imgObj = new Image();
         imgObj.crossOrigin = "";
-        imgObj.src = "lobby_map.png";
+        imgObj.src = "lab_final.png";
         await new Promise((resolve, reject) => {
           imgObj.onload = resolve;
           imgObj.onerror = reject;
