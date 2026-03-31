@@ -26,6 +26,13 @@ except ImportError:
     HAS_SERIAL = False
 
 try:
+    from serial.tools import list_ports
+    HAS_SERIAL_LIST_PORTS = True
+except ImportError:
+    list_ports = None
+    HAS_SERIAL_LIST_PORTS = False
+
+try:
     from PIL import Image
     HAS_PIL = True
 except ImportError:
@@ -94,6 +101,7 @@ class DynamixelMotorController:
         top_to_bottom_ticks=12000, #TODO measure actual ticks from top to bottom
         down_increases_position=True,
         swap_direction_commands=True,
+        dry_run=False,
     ):
         self.device_name = device_name
         self.baudrate = baudrate
@@ -104,6 +112,7 @@ class DynamixelMotorController:
         self.top_to_bottom_ticks = max(0, int(top_to_bottom_ticks))
         self.down_increases_position = bool(down_increases_position)
         self.swap_direction_commands = bool(swap_direction_commands)
+        self.dry_run = bool(dry_run)
         self._lock = threading.Lock()
         self._connected = False
         self._closed = False
@@ -115,6 +124,7 @@ class DynamixelMotorController:
         self._soft_min_limit = None
         self._soft_max_limit = None
         self._software_limit_stop_count = 0
+        self._simulated_position = 0
         self._limit_stop_event = threading.Event()
         self._limit_thread = None
         self._port_handler = PortHandler(self.device_name)
@@ -138,6 +148,18 @@ class DynamixelMotorController:
         if self._closed:
             raise RuntimeError('Motor controller is closed.')
         if self._connected:
+            return
+
+        if self.dry_run:
+            self._top_position = 0
+            self._top_position_raw = 0
+            bottom_sign = 1 if self.down_increases_position else -1
+            self._bottom_position = bottom_sign * self.top_to_bottom_ticks
+            self._soft_min_limit = min(self._top_position, self._bottom_position)
+            self._soft_max_limit = max(self._top_position, self._bottom_position)
+            self._simulated_position = self._top_position
+            self._connected = True
+            print('[Motor DRY-RUN] Hardware is disabled; commands will be logged only.')
             return
 
         if not self._port_handler.openPort():
@@ -272,6 +294,9 @@ class DynamixelMotorController:
         return 'DOWN' if direction == 'UP' else 'UP'
 
     def _stop_without_lock(self):
+        if self.dry_run:
+            self._last_direction = None
+            return
         self._write4(self.ADDR_GOAL_VELOCITY, 0)
         self._last_direction = None
 
@@ -317,6 +342,15 @@ class DynamixelMotorController:
 
         with self._lock:
             self._ensure_connection()
+
+            if self.dry_run:
+                self._last_direction = effective_direction
+                print(
+                    f'[Motor DRY-RUN] Command: requested={direction_upper}, '
+                    f'effective={effective_direction}, action=START'
+                )
+                return
+
             current_position = self._read_present_position()
             if self._at_soft_limit_for_direction(effective_direction, current_position):
                 self._stop_without_lock()
@@ -333,12 +367,20 @@ class DynamixelMotorController:
     def stop(self):
         with self._lock:
             self._ensure_connection()
+            if self.dry_run and self._last_direction is not None:
+                print(f'[Motor DRY-RUN] Command: action=STOP from {self._last_direction}')
             self._stop_without_lock()
 
     def reboot(self):
         with self._lock:
             self._ensure_connection()
             self._stop_without_lock()
+
+            if self.dry_run:
+                self._simulated_position = self._top_position or 0
+                self._last_direction = None
+                print('[Motor DRY-RUN] Command: action=REBOOT')
+                return
 
             # Re-initialize runtime motor state without dropping the serial session.
             try:
@@ -366,7 +408,7 @@ class DynamixelMotorController:
             if self._closed:
                 return
 
-            if self._connected:
+            if self._connected and not self.dry_run:
                 self._limit_stop_event.set()
                 limit_thread = self._limit_thread
                 self._limit_thread = None
@@ -413,7 +455,7 @@ class DynamixelMotorController:
     def read_position_state(self):
         with self._lock:
             self._ensure_connection()
-            current_position_raw = self._read_present_position()
+            current_position_raw = self._simulated_position if self.dry_run else self._read_present_position()
             current_position = current_position_raw
             current_position_single_turn = current_position_raw % self.SINGLE_TURN_TICKS
             top_position = self._top_position
@@ -437,7 +479,7 @@ class DynamixelMotorController:
     def read_ui_state(self):
         with self._lock:
             self._ensure_connection()
-            current_position = self._read_present_position()
+            current_position = self._simulated_position if self.dry_run else self._read_present_position()
             requested_up_effective = self._map_requested_direction('UP')
             requested_down_effective = self._map_requested_direction('DOWN')
             at_limit_up = self._at_soft_limit_for_direction(requested_up_effective, current_position)
@@ -471,13 +513,15 @@ DYNAMIXEL_PORT = resolve_dynamixel_port()
 MOTOR_TOP_TO_BOTTOM_TICKS = int(os.getenv('MOTOR_TOP_TO_BOTTOM_TICKS', '12000'))
 MOTOR_DOWN_INCREASES_POSITION = os.getenv('MOTOR_DOWN_INCREASES_POSITION', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_SWAP_DIRECTION_COMMANDS = os.getenv('MOTOR_SWAP_DIRECTION_COMMANDS', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
-MOTOR_OFFSET_DEBUG_PRINT = os.getenv('MOTOR_OFFSET_DEBUG_PRINT', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+MOTOR_DRY_RUN = os.getenv('MOTOR_DRY_RUN', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
+MOTOR_OFFSET_DEBUG_PRINT = os.getenv('MOTOR_OFFSET_DEBUG_PRINT', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
 MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS = float(os.getenv('MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS', '0.5'))
 motor_controller = DynamixelMotorController(
     device_name=DYNAMIXEL_PORT,
     top_to_bottom_ticks=MOTOR_TOP_TO_BOTTOM_TICKS,
     down_increases_position=MOTOR_DOWN_INCREASES_POSITION,
     swap_direction_commands=MOTOR_SWAP_DIRECTION_COMMANDS,
+    dry_run=MOTOR_DRY_RUN,
 )
 
 
@@ -524,17 +568,19 @@ motor_offset_calibration_printer = MotorOffsetCalibrationPrinter(
     interval_seconds=MOTOR_OFFSET_DEBUG_INTERVAL_SECONDS,
 )
 
-if MOTOR_OFFSET_DEBUG_PRINT:
+if MOTOR_OFFSET_DEBUG_PRINT and not MOTOR_DRY_RUN:
     motor_offset_calibration_printer.start()
 
 
 class MotorAutomationController:
     SENSOR_COUNT = 4
-    NO_OBJECT_DISTANCE_CM = 44.0
+    NO_OBJECT_DISTANCE_CM = 40.0
     IGNORE_ABOVE_CM = 45.0
     LOOP_INTERVAL_SECONDS = 0.1
-    LOAD_CONFIRMATION_COUNT = 5
+    LOAD_CONFIRMATION_COUNT = 10
     READ_MATCH_TOLERANCE_CM = 1.0
+    VERBOSE_LOGGING = os.getenv('MOTOR_AUTOMATION_VERBOSE', '1').strip().lower() not in {'0', 'false', 'no', 'off'}
+    DETECTED_SENSOR_LOG_INTERVAL_SECONDS = float(os.getenv('MOTOR_DETECTED_SENSOR_LOG_INTERVAL_SECONDS', '0.75'))
 
     def __init__(self, motor_ctrl):
         self._motor = motor_ctrl
@@ -542,12 +588,21 @@ class MotorAutomationController:
         self._stop_event = threading.Event()
         self._thread = None
         self._last_auto_direction = None
+        self._last_detected = None
+        self._last_confirmed_for_load = None
+        self._last_mode_seen = None
+        self._last_detected_sensor_log = ''
+        self._last_detected_sensor_log_at = 0.0
         self._state = {
             'sensor_cm': [self.NO_OBJECT_DISTANCE_CM] * self.SENSOR_COUNT,
             'last_read_cm': [None] * self.SENSOR_COUNT,
             'same_read_count': [0] * self.SENSOR_COUNT,
             'updated_at': None,
         }
+
+    def _log(self, message):
+        if self.VERBOSE_LOGGING:
+            print(f'[Sensor Auto] {message}')
 
     def _normalize_sensor_value(self, raw_value):
         try:
@@ -609,16 +664,33 @@ class MotorAutomationController:
         # Any sensor reading below the no-object baseline means an object is present.
         return any(value < self.NO_OBJECT_DISTANCE_CM for value in sensor_values)
 
+    def _detected_sensor_entries(self, sensor_values):
+        detected_entries = []
+        for index, value in enumerate(sensor_values):
+            if value < self.NO_OBJECT_DISTANCE_CM:
+                detected_entries.append((index + 1, value))
+        return detected_entries
+
+    def _log_detected_sensors(self, detected_entries):
+        if not detected_entries:
+            return
+
+        details = ', '.join([f'S{sensor_index}={distance:.1f}cm' for sensor_index, distance in detected_entries])
+        now = time.time()
+        if details == self._last_detected_sensor_log and (now - self._last_detected_sensor_log_at) < self.DETECTED_SENSOR_LOG_INTERVAL_SECONDS:
+            return
+
+        self._log(f'Object seen by {details}.')
+        self._last_detected_sensor_log = details
+        self._last_detected_sensor_log_at = now
+
     def _sensor_confirmed_for_load(self, sensor_values, same_read_count):
         for index, value in enumerate(sensor_values):
             if value < self.NO_OBJECT_DISTANCE_CM and same_read_count[index] >= self.LOAD_CONFIRMATION_COUNT:
                 return True
         return False
 
-    def _compute_direction(self, mode_command, sensor_values, same_read_count):
-        detected = self._sensor_detected(sensor_values)
-        confirmed_for_load = self._sensor_confirmed_for_load(sensor_values, same_read_count)
-
+    def _compute_direction(self, mode_command, detected, confirmed_for_load):
         if mode_command == 'LOAD':
             return 'DOWN' if confirmed_for_load else None
         if mode_command == 'UNLOAD':
@@ -632,7 +704,33 @@ class MotorAutomationController:
                 same_read_count = list(self._state['same_read_count'])
 
             mode_command = self._motor.last_mode
-            desired_direction = self._compute_direction(mode_command, sensor_values, same_read_count)
+            detected = self._sensor_detected(sensor_values)
+            detected_entries = self._detected_sensor_entries(sensor_values)
+            confirmed_for_load = self._sensor_confirmed_for_load(sensor_values, same_read_count)
+            desired_direction = self._compute_direction(mode_command, detected, confirmed_for_load)
+
+            if mode_command != self._last_mode_seen:
+                self._log(f'Mode changed to {mode_command}.')
+                self._last_mode_seen = mode_command
+
+            if detected != self._last_detected:
+                if detected:
+                    self._log('Object detected.')
+                    self._log_detected_sensors(detected_entries)
+                else:
+                    self._log('Object no longer detected.')
+                self._last_detected = detected
+
+            if detected:
+                self._log_detected_sensors(detected_entries)
+
+            if confirmed_for_load != self._last_confirmed_for_load:
+                if confirmed_for_load:
+                    self._log('Load condition confirmed (stable object readings).')
+                else:
+                    self._log('Load condition not yet confirmed.')
+                self._last_confirmed_for_load = confirmed_for_load
+
             should_force_stop = (
                 mode_command in {'LOAD', 'UNLOAD'}
                 and desired_direction is None
@@ -640,6 +738,18 @@ class MotorAutomationController:
             )
 
             if desired_direction != self._last_auto_direction or should_force_stop:
+                if desired_direction == 'DOWN':
+                    self._log('Moving down (object confirmed in LOAD mode).')
+                elif desired_direction == 'UP':
+                    self._log('Moving up (no object detected in UNLOAD mode).')
+                else:
+                    if mode_command == 'LOAD':
+                        self._log('Holding position (waiting for stable object detection before moving down).')
+                    elif mode_command == 'UNLOAD':
+                        self._log('Holding position (object still detected, not moving up yet).')
+                    else:
+                        self._log('Holding position (MANUAL mode).')
+
                 try:
                     if desired_direction is None:
                         self._motor.stop()
@@ -692,6 +802,9 @@ class ArduinoUltrasonicSerialReader:
         self._stop_event = threading.Event()
         self._thread = None
         self._serial_conn = None
+        self._raw_logging = os.getenv('ULTRASONIC_RAW_LOGGING', '0').strip().lower() not in {'0', 'false', 'no', 'off'}
+        self._last_raw_log_at = 0.0
+        self._raw_log_interval_seconds = float(os.getenv('ULTRASONIC_RAW_LOG_INTERVAL_SECONDS', '0.25'))
         self._state = {
             'enabled': HAS_SERIAL,
             'port': self._port,
@@ -707,6 +820,22 @@ class ArduinoUltrasonicSerialReader:
         configured_port = os.getenv('ULTRASONIC_SERIAL_PORT', '').strip()
         if configured_port:
             return configured_port
+
+        if HAS_SERIAL and HAS_SERIAL_LIST_PORTS and os.name == 'nt':
+            ports = list(list_ports.comports())
+            preferred = []
+            fallback = []
+            for port in ports:
+                description = (port.description or '').lower()
+                if any(token in description for token in ('arduino', 'ch340', 'usb serial', 'cp210')):
+                    preferred.append(port.device)
+                else:
+                    fallback.append(port.device)
+
+            if preferred:
+                return preferred[0]
+            if fallback:
+                return fallback[0]
 
         for candidate in ('/dev/ttyACM0', '/dev/ttyACM1', '/dev/serial0'):
             if os.path.exists(candidate):
@@ -751,13 +880,17 @@ class ArduinoUltrasonicSerialReader:
     def _run_loop(self):
         if not HAS_SERIAL:
             self._set_state(last_error='pyserial is not installed.')
+            print('[Ultrasonic] pyserial is not installed; sensor serial reader disabled.')
             return
+
+        print(f'[Ultrasonic] Starting serial reader on {self._port} @ {self._baudrate} baud.')
 
         while not self._stop_event.is_set():
             try:
                 if self._serial_conn is None:
                     self._serial_conn = self._open_serial()
                     self._set_state(connected=True, last_error=None)
+                    print(f'[Ultrasonic] Connected to {self._port}.')
 
                 raw_line = self._serial_conn.readline()
                 if not raw_line:
@@ -767,11 +900,18 @@ class ArduinoUltrasonicSerialReader:
                 if not line:
                     continue
 
+                if self._raw_logging:
+                    now = time.time()
+                    if (now - self._last_raw_log_at) >= self._raw_log_interval_seconds:
+                        print(f'[Ultrasonic RAW] {line}')
+                        self._last_raw_log_at = now
+
                 parsed_values = self._parse_sensor_line(line)
                 if parsed_values is None:
                     with self._lock:
                         self._state['parse_errors'] += 1
                         self._state['last_line'] = line
+                    print(f'[Ultrasonic] Unparsed line: {line}')
                     continue
 
                 self._motor_auto_ctrl.update_sensors(parsed_values)
@@ -779,6 +919,7 @@ class ArduinoUltrasonicSerialReader:
 
             except Exception as error:
                 self._set_state(connected=False, last_error=str(error))
+                print(f'[Ultrasonic] Serial error on {self._port}: {error}')
                 self._close_serial()
                 self._stop_event.wait(1.0)
 
