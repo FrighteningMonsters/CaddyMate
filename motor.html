@@ -84,6 +84,8 @@
 
             const MAX_RETRIES = 3;
             const RETRY_DELAY_MS = 100;
+            const STATE_POLL_INTERVAL_MS = 200;
+            let statePollTimer = null;
 
             function setStatus(message, isError) {
                 statusEl.textContent = message;
@@ -146,6 +148,86 @@
             function clearBlockedDirections() {
                 setDirectionBlocked('up', false);
                 setDirectionBlocked('down', false);
+            }
+
+            function isDirectionBlockedByState(state, direction) {
+                if (!state || !direction) {
+                    return false;
+                }
+
+                if (direction === 'up') {
+                    return !!state.at_limit_up;
+                }
+                if (direction === 'down') {
+                    return !!state.at_limit_down;
+                }
+
+                return false;
+            }
+
+            function applyLimitState(state) {
+                if (!state) {
+                    return;
+                }
+
+                setDirectionBlocked('up', !!state.at_limit_up);
+                setDirectionBlocked('down', !!state.at_limit_down);
+            }
+
+            async function fetchMotorState() {
+                return retryWithExponentialBackoff(async function () {
+                    const response = await fetch('/api/motor/state', {
+                        method: 'GET',
+                        cache: 'no-store',
+                    });
+
+                    if (!response.ok) {
+                        const payload = await response.json().catch(function () { return {}; });
+                        throw new Error(payload.error || 'Motor state fetch failed');
+                    }
+
+                    return response.json();
+                });
+            }
+
+            function stopStatePolling() {
+                if (statePollTimer === null) {
+                    return;
+                }
+                clearInterval(statePollTimer);
+                statePollTimer = null;
+            }
+
+            function startStatePolling() {
+                if (statePollTimer !== null) {
+                    return;
+                }
+
+                statePollTimer = setInterval(function () {
+                    if (activeDirection === null) {
+                        return;
+                    }
+
+                    fetchMotorState()
+                        .then(function (state) {
+                            applyLimitState(state);
+
+                            if (activeDirection !== null && state.running_direction === null) {
+                                const stoppedDirection = activeDirection;
+                                activeDirection = null;
+                                document.querySelector('.direction-button[data-direction="' + stoppedDirection + '"]').classList.remove('is-active');
+
+                                if (isDirectionBlockedByState(state, stoppedDirection)) {
+                                    setStatus('Cannot move ' + stoppedDirection + ': platform is already at its travel limit.', true);
+                                } else {
+                                    setStatus('Motor idle', false);
+                                }
+                            }
+                        })
+                        .catch(function () {
+                            // Keep polling through transient network/controller errors.
+                        });
+                }, STATE_POLL_INTERVAL_MS);
             }
 
             async function retryWithExponentialBackoff(fn, maxRetries = MAX_RETRIES) {
@@ -260,6 +342,7 @@
                 try {
                     await sendMotorCommand('start', direction);
                     clearBlockedDirections();
+                    startStatePolling();
                 } catch (error) {
                     activeDirection = null;
                     document.querySelector('.direction-button[data-direction="' + direction + '"]').classList.remove('is-active');
@@ -281,6 +364,12 @@
 
                 try {
                     await sendMotorCommand('stop');
+                    stopStatePolling();
+                    fetchMotorState()
+                        .then(function (state) {
+                            applyLimitState(state);
+                        })
+                        .catch(function () {});
                     setStatus('Motor idle', false);
                 } catch (error) {
                     setStatus(formatMotorError(error.message), true);
@@ -322,10 +411,23 @@
             });
 
             setModeStatus(activeMode);
+            // System starts at top travel limit, so block UP immediately until backend state confirms.
+            setDirectionBlocked('up', true);
+            fetchMotorState()
+                .then(function (state) {
+                    applyLimitState(state);
+                })
+                .catch(function () {});
 
             document.addEventListener('visibilitychange', function () {
                 if (document.hidden && activeDirection !== null) {
                     handleRelease(activeDirection);
+                } else if (!document.hidden) {
+                    fetchMotorState()
+                        .then(function (state) {
+                            applyLimitState(state);
+                        })
+                        .catch(function () {});
                 }
             });
 

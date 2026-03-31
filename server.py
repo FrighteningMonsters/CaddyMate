@@ -413,6 +413,26 @@ class DynamixelMotorController:
             'software_limit_stop_count': self._software_limit_stop_count,
         }
 
+    def read_ui_state(self):
+        with self._lock:
+            self._ensure_connection()
+            current_position = self._read_present_position()
+            requested_up_effective = self._map_requested_direction('UP')
+            requested_down_effective = self._map_requested_direction('DOWN')
+            at_limit_up = self._at_soft_limit_for_direction(requested_up_effective, current_position)
+            at_limit_down = self._at_soft_limit_for_direction(requested_down_effective, current_position)
+
+            return {
+                'current_position': current_position,
+                'soft_min_limit': self._soft_min_limit,
+                'soft_max_limit': self._soft_max_limit,
+                'at_limit_up': at_limit_up,
+                'at_limit_down': at_limit_down,
+                'software_limit_stop_count': self._software_limit_stop_count,
+                'running_direction': self._last_direction,
+                'mode': self._last_mode,
+            }
+
 
 def resolve_dynamixel_port():
     configured_port = os.getenv('DYNAMIXEL_PORT', '').strip()
@@ -1561,6 +1581,14 @@ def stop_motor():
         return jsonify({'status': 'stopped'})
     except Exception as error:
         return jsonify({'error': f'Failed to stop motor: {error}'}), 500
+
+
+@app.route('/api/motor/state')
+def get_motor_state():
+    try:
+        return jsonify(motor_controller.read_ui_state())
+    except Exception as error:
+        return jsonify({'error': f'Failed to read motor state: {error}'}), 500
 
 
 @app.route('/api/motor/mode', methods=['POST'])
