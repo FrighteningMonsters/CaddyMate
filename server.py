@@ -36,9 +36,9 @@ CORS(app)
 
 DB_PATH = 'data/caddymate_store.db'
 LAYOUT_PATH = 'store_layout.json'
-SLAM_PGM_PATH = 'final_arena.pgm'
-SLAM_YAML_PATH = 'final_arena.yaml'
-SLAM_OUTPUT_PNG = 'final_arena.png'
+SLAM_PGM_PATH = 'lab_final.pgm'
+SLAM_YAML_PATH = 'lab_final.yaml'
+SLAM_OUTPUT_PNG = 'lab_final.png'
 ROS_CONFIG_PATH = 'ros_config.json'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VOICE_MODEL_PATH = os.path.join(BASE_DIR, 'resources', 'vosk-model-small-en-us-0.15')
@@ -1476,8 +1476,8 @@ def convert_slam_pgm_to_png():
                     out_pixels[x, y] = (30, 41, 59, 255)
                 else:
                     out_pixels[x, y] = (148, 163, 184, 255)
-        out.rotate(90, expand=True).save(SLAM_OUTPUT_PNG)
-        print(f"SLAM map converted (rotated 90° CCW): {SLAM_OUTPUT_PNG}")
+        out.save(SLAM_OUTPUT_PNG)
+        print(f"SLAM map converted: {SLAM_OUTPUT_PNG}")
     except Exception as e:
         print(f"SLAM map conversion failed: {e}")
 
@@ -1503,9 +1503,9 @@ def load_slam_map_info():
                     origin_y = float(parts[1].strip())
         if os.path.isfile(SLAM_PGM_PATH) and HAS_PIL:
             with Image.open(SLAM_PGM_PATH) as img:
-                h, w = img.size  # 90° CCW rotation swaps width and height
+                w, h = img.size
         else:
-            w, h = 278, 372
+            w, h = 372, 278
         return {
             'resolution': resolution,
             'origin_x': origin_x,

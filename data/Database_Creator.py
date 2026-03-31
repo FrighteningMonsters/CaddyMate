@@ -530,7 +530,7 @@ def parse_aisle_position(raw_value):
 # ROS map frame coordinates (x, y, yaw in radians) for demo items on lab SLAM map
 # origin: [-3.45, -4.01], resolution: 0.05, map size: 300x370 px
 item_ros_coords = {
-    "Apples":     (4.4,  4.0,  0.0),
+    "Apples":     (3.01,  1.39,  0.0),
     "Whole milk": (3.5,  11.0, 0.0),
     "Bananas":    (2.6, -0.6,  0.0),
 }

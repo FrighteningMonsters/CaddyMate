@@ -427,7 +427,7 @@
       let amclCheckIntervalId = null;
 
       async function loadSlamLayout() {
-        const imgRes = await fetch("final_arena.png", { cache: "force-cache" });
+        const imgRes = await fetch("lab_final.png", { cache: "force-cache" });
         if (!imgRes.ok) {
           showMapUnavailablePlaceholder();
           syncUser();
@@ -435,7 +435,7 @@
         }
         const imgObj = new Image();
         imgObj.crossOrigin = "";
-        imgObj.src = "final_arena.png";
+        imgObj.src = "lab_final.png";
         await new Promise((resolve, reject) => {
           imgObj.onload = resolve;
           imgObj.onerror = reject;
@@ -502,9 +502,8 @@
 
       function rosToPixel(xRos, yRos) {
         if (!mapInfo) return null;
-        // Map is rendered 90° CCW: ROS +Y → screen right, ROS +X → screen down
-        const col = (yRos - mapInfo.origin_y) / mapInfo.resolution;
-        const row = (xRos - mapInfo.origin_x) / mapInfo.resolution;
+        const col = (xRos - mapInfo.origin_x) / mapInfo.resolution;
+        const row = (mapInfo.height_px - 1) - (yRos - mapInfo.origin_y) / mapInfo.resolution;
         return { x: col, y: row };
       }
 
