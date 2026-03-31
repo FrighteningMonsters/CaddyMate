@@ -10,10 +10,19 @@
 <body>
     <div class="container motor-container">
         <div class="header">
-            <button class="back-button" onclick="window.location.href='home.html'">
-                <span>← Back</span>
-            </button>
             <h1>Motor Control</h1>
+            <div class="header-actions">
+                <button
+                    type="button"
+                    class="reboot-button reboot-button-small"
+                    id="motor-reboot-button"
+                >
+                    Reboot
+                </button>
+                <button class="back-button" onclick="window.location.href='home.html'">
+                    <span>← Back</span>
+                </button>
+            </div>
         </div>
 
         <div class="mode-controls" role="group" aria-label="Select motor mode">
@@ -68,9 +77,11 @@
             const modeStatusEl = document.getElementById('mode-status');
             const modeButtons = document.querySelectorAll('.mode-button');
             const directionButtons = document.querySelectorAll('.direction-button');
+            const rebootButton = document.getElementById('motor-reboot-button');
             let activeDirection = null;
             let activeMode = 'manual';
             let modeChangeInFlight = false;
+            let rebootInFlight = false;
             const blockedDirections = {
                 up: false,
                 down: false,
@@ -284,6 +295,25 @@
                 });
             }
 
+            async function sendMotorReboot() {
+                return retryWithExponentialBackoff(async function () {
+                    const response = await fetch('/api/motor/reboot', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({}),
+                    });
+
+                    if (!response.ok) {
+                        const payload = await response.json().catch(function () { return {}; });
+                        throw new Error(payload.error || 'Motor reboot failed');
+                    }
+
+                    return response.json();
+                });
+            }
+
             function setActiveMode(mode) {
                 modeButtons.forEach(function (button) {
                     button.classList.toggle('is-active', button.dataset.mode === mode);
@@ -298,7 +328,7 @@
             }
 
             async function handleModeSelect(mode) {
-                if (modeChangeInFlight || mode === activeMode) {
+                if (rebootInFlight || modeChangeInFlight || mode === activeMode) {
                     return;
                 }
 
@@ -322,6 +352,10 @@
             }
 
             async function handlePress(direction) {
+                if (rebootInFlight) {
+                    return;
+                }
+
                 if (activeDirection === direction) {
                     return;
                 }
@@ -351,6 +385,46 @@
                         setDirectionBlocked(blockedDirection, true);
                     }
                     setStatus(formatMotorError(error.message, direction), true);
+                }
+            }
+
+            async function handleMotorReboot() {
+                if (rebootInFlight) {
+                    return;
+                }
+
+                rebootInFlight = true;
+                stopStatePolling();
+
+                if (activeDirection !== null) {
+                    await handleRelease(activeDirection);
+                }
+
+                if (rebootButton) {
+                    rebootButton.disabled = true;
+                    rebootButton.classList.add('is-busy');
+                }
+
+                setStatus('Rebooting motor...', false);
+
+                try {
+                    const result = await sendMotorReboot();
+                    applyLimitState(result.state || null);
+                    setStatus('Motor rebooted', false);
+                } catch (error) {
+                    setStatus(formatMotorError(error.message), true);
+                } finally {
+                    rebootInFlight = false;
+                    if (rebootButton) {
+                        rebootButton.disabled = false;
+                        rebootButton.classList.remove('is-busy');
+                    }
+
+                    fetchMotorState()
+                        .then(function (state) {
+                            applyLimitState(state);
+                        })
+                        .catch(function () {});
                 }
             }
 
@@ -409,6 +483,12 @@
                     handleModeSelect(mode);
                 });
             });
+
+            if (rebootButton) {
+                rebootButton.addEventListener('click', function () {
+                    handleMotorReboot();
+                });
+            }
 
             setModeStatus(activeMode);
             // System starts at top travel limit, so block UP immediately until backend state confirms.
