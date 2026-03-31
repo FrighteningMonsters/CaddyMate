@@ -121,10 +121,10 @@
 
 #userMarker {
   position: absolute;
-  width: 25px;
-  height: 25px;
+  width: 14px;
+  height: 14px;
   background: #ef4444;
-  border: 3px solid white;
+  border: 2px solid white;
   border-radius: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
@@ -134,9 +134,9 @@
   position: absolute;
   width: 0;
   height: 0;
-  border-left: 9px solid transparent;
-  border-right: 9px solid transparent;
-  border-bottom: 18px solid #ef4444;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 10px solid #ef4444;
   transform: translate(-50%, -100%);
   transform-origin: 50% 100%;
   pointer-events: none;
