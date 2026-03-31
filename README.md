@@ -130,6 +130,7 @@ ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
 5. **Navigate** button → enables motor, publishes `/goal_pose`, monitors status
 6. On arrival (status SUCCEEDED) or failure (CANCELED/ABORTED) → overlay shown; motor released
 7. **Stop** button cancels navigation and releases motor
+8. **Manual drive arrival** — if Navigate is not pressed, robot position is checked against the target on every `/amcl_pose` update; entering within **0.7 m** triggers the same "Item Found" overlay and auto-exit (detection armed 2 s after first position fix to prevent instant trigger on page load)
 
 ### Network Topology (Demo Setup)
 
