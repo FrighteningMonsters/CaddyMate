@@ -79,12 +79,12 @@ class DynamixelMotorController:
         device_name,
         baudrate=57600,
         dxl_id=1,
-        speed_up=-256,
+        speed_up=-256, #TODO test lower speeds for more torque if necessary
         speed_down=256,
         profile_accel=30,
-        top_to_bottom_ticks=12000,
+        top_to_bottom_ticks=12000, #TODO measure actual ticks from top to bottom
         down_increases_position=True,
-        swap_direction_commands=False,
+        swap_direction_commands=True,
     ):
         self.device_name = device_name
         self.baudrate = baudrate
