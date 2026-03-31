@@ -146,6 +146,11 @@
       let routeLine = null;
       let hasReachedTarget = false;
 
+      // Preview path state (pre-navigation, computed by server A*)
+      let previewLine = null;      // Konva.Line — orange dashed
+      let previewPath = null;      // [[col, row], ...] pixel coords for trimming
+      let robotRosPos = null;      // {x, y} latest ROS-frame robot position
+
       let cameraScale = 1;
       const EXIT_MAP_DELAY_MS = 2200;
 
@@ -224,7 +229,7 @@
         userMarker.style.top = p.y + "px";
         userArrow.style.left = p.x + "px";
         userArrow.style.top = p.y + "px";
-        userArrow.style.transform = `translate(-50%,-100%) rotate(${pose.angle + 270}deg)`;
+        userArrow.style.transform = `translate(-50%,-100%) rotate(${pose.angle + 90}deg)`;
       }
 
       function upsertTargetMarker() {
@@ -258,6 +263,99 @@
           routeLine.points([]);
           layer.batchDraw();
         }
+      }
+
+      function clearPreviewLine() {
+        if (previewLine) {
+          previewLine.destroy();
+          previewLine = null;
+        }
+        previewPath = null;
+        layer.batchDraw();
+      }
+
+      async function requestPreviewPath() {
+        if (!slamMode || !mapInfo || !robotRosPos || selectedXRos == null || selectedYRos == null) return;
+        try {
+          const url =
+            `${API_URL}/slam_preview_path` +
+            `?sx=${robotRosPos.x}&sy=${robotRosPos.y}` +
+            `&gx=${selectedXRos}&gy=${selectedYRos}`;
+          const res = await fetch(url);
+          if (!res.ok) return;
+          const data = await res.json();
+          if (!data.path || data.path.length < 2) return;
+
+          // Convert ROS path → pixel coords (stored for trimming)
+          previewPath = data.path
+            .map(([xr, yr]) => {
+              const px = rosToPixel(xr, yr);
+              return px ? [px.x, px.y] : null;
+            })
+            .filter(Boolean);
+
+          const pts = previewPath.flat();
+
+          if (previewLine) {
+            previewLine.points(pts);
+          } else {
+            previewLine = new Konva.Line({
+              points: pts,
+              stroke: "#f97316",
+              strokeWidth: 3,
+              lineCap: "round",
+              lineJoin: "round",
+              dash: [5, 4],
+              opacity: 0.85,
+            });
+            layer.add(previewLine);
+            if (targetMarker) targetMarker.moveToTop();
+          }
+          layer.batchDraw();
+        } catch (_e) {
+          // silently fail — preview is best-effort
+        }
+      }
+
+      // How far the robot can stray from the path before a full re-plan (pixels)
+      const PREVIEW_DEVIATE_PX = 20;
+
+      function trimPreviewPath() {
+        if (!previewPath || previewPath.length < 2 || !robotPixelPos || !previewLine) return;
+
+        const rx = robotPixelPos.x;
+        const ry = robotPixelPos.y;
+
+        // Find the index of the closest point on previewPath to the robot
+        let closestIdx = 0;
+        let closestDist = Infinity;
+        for (let i = 0; i < previewPath.length; i++) {
+          const dx = previewPath[i][0] - rx;
+          const dy = previewPath[i][1] - ry;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d < closestDist) {
+            closestDist = d;
+            closestIdx = i;
+          }
+        }
+
+        // Robot deviated too far from path → full re-plan
+        if (closestDist > PREVIEW_DEVIATE_PX) {
+          requestPreviewPath();
+          return;
+        }
+
+        // Trim already-passed segment; keep at least the final point
+        previewPath = previewPath.slice(closestIdx);
+
+        if (previewPath.length < 2) {
+          // Robot has essentially reached the end of the preview path
+          clearPreviewLine();
+          return;
+        }
+
+        previewLine.points(previewPath.flat());
+        layer.batchDraw();
       }
 
       function showMapUnavailablePlaceholder() {
@@ -328,6 +426,8 @@
         layer.destroyChildren();
         targetMarker = null;
         routeLine = null;
+        previewLine = null;
+        previewPath = null;
         hasReachedTarget = false;
         const mapRect = new Konva.Rect({
           x: 0,
@@ -362,6 +462,8 @@
           userArrow.style.display = "none";
         }
         updateNavigateButtonState();
+        // If robot position is already known, draw preview path immediately
+        if (robotRosPos) requestPreviewPath();
       }
 
       function updateNavigateButtonState() {
@@ -450,6 +552,7 @@
                   lastAmclReceivedAt = Date.now();
                   document.getElementById("positionUnavailableBanner")?.classList.remove("visible");
                   robotPixelPos = px;
+                  robotRosPos = { x: p.x, y: p.y };
                   pose.xPercent = (px.x / mapInfo.width_px) * 100;
                   pose.yPercent = (px.y / mapInfo.height_px) * 100;
                   if (o && typeof o.x === "number" && typeof o.y === "number" && typeof o.z === "number" && typeof o.w === "number") {
@@ -459,6 +562,12 @@
                   userMarker.style.display = "";
                   userArrow.style.display = "";
                   syncUser();
+                  // First position fix → request full path; subsequent → trim
+                  if (!previewPath) {
+                    requestPreviewPath();
+                  } else {
+                    trimPreviewPath();
+                  }
                 }
               });
               if (amclCheckIntervalId) clearInterval(amclCheckIntervalId);
@@ -530,6 +639,7 @@
         arrivalOverlay.classList.add("visible");
         arrivalOverlay.setAttribute("aria-hidden", "false");
         clearRouteLine();
+        clearPreviewLine();
         navGoalSentAt = null;
         setTimeout(exitMapView, EXIT_MAP_DELAY_MS);
       }
@@ -545,6 +655,9 @@
         arrivalOverlay.classList.add("visible");
         arrivalOverlay.setAttribute("aria-hidden", "false");
         clearRouteLine();
+        // Restore preview path from current robot position after nav failure/cancel
+        clearPreviewLine();
+        requestPreviewPath();
         navGoalSentAt = null;
       }
 
@@ -677,6 +790,8 @@
           };
           hasReachedTarget = false;
           navGoalSentAt = Date.now();
+          // Hide preview line — real /plan blue line takes over during navigation
+          if (previewLine) { previewLine.visible(false); layer.batchDraw(); }
           goalTopic.publish(goalMsg);
           subscribeNavStatus();
           updateStopButtonVisibility();
